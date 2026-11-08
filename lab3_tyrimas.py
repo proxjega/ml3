@@ -4,6 +4,7 @@ import kmedoids
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from sklearn.decomposition import PCA
 from sklearn.metrics import pairwise_distances, silhouette_score
 
 
@@ -164,8 +165,60 @@ def find_optimal_k(df, metric='euclidean', k_max=None, random_state=0,
     return tab, best, best_15
 
 
+# ==============================================================================
+# 3. K-MEDOIDS KLASTERIŲ VIZUALIZACIJA PCA ERDVĖJE
+# ==============================================================================
+def plot_kmedoids_pca(df, k=4, metric='euclidean', random_state=0,
+                      out_dir='exports/vizualizacija'):
+    """
+    Suklasterizuoja duomenis k-medoids algoritmu originalioje (Robust Scaling) erdvėje
+    ir pavaizduoja klasterius pirmųjų dviejų PCA komponenčių plokštumoje.
+    Kairėje – visi objektai, dešinėje – priartintas vaizdas (1–99 procentilių ribos).
+    """
+    X = robust_scale(df, list(df.columns)).values
+    D = pairwise_distances(X, metric=metric)
+    res = kmedoids.fasterpam(D, k, random_state=random_state)
+    labels = res.labels
+
+    pca = PCA(n_components=2, random_state=random_state)
+    Z = pca.fit_transform(X)
+    evr = pca.explained_variance_ratio_ * 100
+
+    sizes = np.bincount(labels, minlength=k)
+    print(f"k-medoids (k={k}, {metric}) klasterių dydžiai:", dict(enumerate(sizes)))
+    print(f"PCA paaiškinta dispersija: PC1={evr[0]:.1f} %, PC2={evr[1]:.1f} %")
+
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5.5))
+    for ax, zoom in zip(axes, [False, True]):
+        for c in range(k):
+            m = labels == c
+            ax.scatter(Z[m, 0], Z[m, 1], s=6, alpha=0.6, label=f"Klasteris {c} (n={sizes[c]})")
+        ax.scatter(Z[res.medoids, 0], Z[res.medoids, 1], marker='X', s=120,
+                   c='black', edgecolors='white', label='Medoidai')
+        if zoom:
+            lo, hi = np.percentile(Z, [1, 99], axis=0)
+            pad = (hi - lo) * 0.05
+            ax.set_xlim(lo[0] - pad[0], hi[0] + pad[0])
+            ax.set_ylim(lo[1] - pad[1], hi[1] + pad[1])
+            ax.set_title("Priartintas vaizdas (1–99 procentilės)")
+        else:
+            ax.set_title("Visi objektai")
+        ax.set_xlabel(f"PC1 ({evr[0]:.1f} %)")
+        ax.set_ylabel(f"PC2 ({evr[1]:.1f} %)")
+        ax.grid(alpha=0.3)
+    axes[0].legend(fontsize=8, markerscale=2)
+    fig.suptitle(f"k-medoids klasteriai PCA erdvėje (k={k}, {metric} atstumas)")
+    fig.tight_layout()
+    os.makedirs(out_dir, exist_ok=True)
+    fig.savefig(f"{out_dir}/kmedoids_{metric}_k{k}_pca.png", dpi=150)
+    plt.close(fig)
+    return labels
+
+
 if __name__ == '__main__':
     df_out = prepare_dataset()
     print(f"Išsaugota exports/duomenys/A28_cleaned.csv: {df_out.shape[0]} eilučių, {df_out.shape[1]} požymių")
 
     find_optimal_k(df_out, metric='euclidean')
+
+    plot_kmedoids_pca(df_out, k=4, metric='euclidean')
