@@ -1,9 +1,11 @@
 import os
+import sys
 
 import kmedoids
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from scipy.cluster.hierarchy import dendrogram, linkage
 from sklearn.decomposition import PCA
 from sklearn.metrics import pairwise_distances, silhouette_score
 
@@ -101,7 +103,7 @@ def find_optimal_k(df, metric='euclidean', k_max=None, random_state=0,
                    out_dir='exports/k_parinkimas'):
     """
     Optimalaus klasterių skaičiaus paieška k-medoids algoritmu originalioje erdvėje:
-      - empyrinis metodas: k ≈ sqrt(n/2) (naudojamas kaip viršutinė k riba),
+      - empirinis metodas: k ≈ sqrt(n/2) (naudojamas kaip viršutinė k riba),
       - Elbow metodas: k-medoids kaina (atstumų iki medoidų suma),
       - vidutinio silueto metodas.
     Prieš klasterizavimą taikomas Robust Scaling.
@@ -165,6 +167,46 @@ def find_optimal_k(df, metric='euclidean', k_max=None, random_state=0,
     return tab, best, best_15
 
 
+def plot_dendrogram(df, method='single', k_max=15, p=30, out_dir='exports/k_parinkimas'):
+    """
+    AGNES (aglomeracinio hierarchinio klasterizavimo) dendrograma, Euklido atstumas.
+    Prieš klasterizavimą taikomas Robust Scaling.
+    Optimalus k parenkamas pagal didžiausią šuolį tarp paskutinių sujungimų aukščių:
+    dendrograma kerpama per šio šuolio vidurį.
+    Rodomi tik paskutiniai p sujungimai (truncate_mode='lastp'), nes objektų yra 4455.
+    """
+    X = robust_scale(df, list(df.columns)).values
+    Z = linkage(X, method=method, metric='euclidean')
+
+    # Sujungimų aukščiai mažėjimo tvarka: tarp h[i-1] ir h[i] kirpimas duoda i+1 klasterių
+    h = Z[::-1, 2][:k_max]
+    gaps = h[:-1] - h[1:]
+    best_i = int(np.argmax(gaps)) + 1
+    k_best = best_i + 1
+    cut = (h[best_i - 1] + h[best_i]) / 2
+
+    print(f"Dendrograma ({method}, euclidean): didžiausias šuolis ties k={k_best}, "
+          f"kirpimo aukštis={cut:.2f}")
+    print("Paskutinių sujungimų aukščiai:", np.round(h, 2))
+
+    # Single jungimas sukuria labai gilų (grandininį) medį – scipy piešimui reikia didesnės rekursijos ribos
+    sys.setrecursionlimit(max(sys.getrecursionlimit(), 20000))
+    fig, ax = plt.subplots(figsize=(13, 5.5))
+    dendrogram(Z, truncate_mode='lastp', p=p, show_contracted=True, ax=ax,
+               color_threshold=cut, above_threshold_color='grey')
+    ax.axhline(cut, color='red', linestyle='--', linewidth=1,
+               label=f"Kirpimas: k={k_best} (aukštis {cut:.1f})")
+    ax.set_title(f"AGNES dendrograma ({method} jungimas, Euklido atstumas, paskutiniai {p} sujungimai)")
+    ax.set_xlabel("Objektai / sujungtų objektų grupės (skliaustuose – objektų skaičius)")
+    ax.set_ylabel("Sujungimo atstumas")
+    ax.legend()
+    fig.tight_layout()
+    os.makedirs(out_dir, exist_ok=True)
+    fig.savefig(f"{out_dir}/agnes_{method}_euclidean_dendrograma.png", dpi=150)
+    plt.close(fig)
+    return Z, k_best
+
+
 # ==============================================================================
 # 3. K-MEDOIDS KLASTERIŲ VIZUALIZACIJA PCA ERDVĖJE
 # ==============================================================================
@@ -220,5 +262,6 @@ if __name__ == '__main__':
     print(f"Išsaugota exports/duomenys/A28_cleaned.csv: {df_out.shape[0]} eilučių, {df_out.shape[1]} požymių")
 
     find_optimal_k(df_out, metric='euclidean')
+    plot_dendrogram(df_out, method='single')
 
     plot_kmedoids_pca(df_out, k=4, metric='euclidean')
