@@ -129,32 +129,39 @@ def find_optimal_k(df, metric='euclidean', k_max=None, random_state=0,
     os.makedirs(out_dir, exist_ok=True)
     tab.to_csv(f"{out_dir}/kmedoids_{metric}_k_lentele.csv", index=False)
 
-    best = {
-        'cost': elbow_point(tab['k'].values, tab['cost'].values),
-        'silhouette': int(tab.loc[tab['silhouette'].idxmax(), 'k']),
-    }
-
-    titles = {
-        'cost': f"Elbow (k-medoids kaina, alkūnė ties k={best['cost']})",
-        'silhouette': f"Vidutinis siluetas ↑ (geriausias k={best['silhouette']})",
-    }
-    fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
-    for ax, col in zip(axes, ['cost', 'silhouette']):
-        ax.plot(tab['k'], tab[col], 'o-', markersize=3)
-        if col in best:
+    def plot_k(sub, suffix):
+        best = {
+            'cost': elbow_point(sub['k'].values, sub['cost'].values),
+            'silhouette': int(sub.loc[sub['silhouette'].idxmax(), 'k']),
+        }
+        titles = {
+            'cost': f"Elbow (alkūnė ties k={best['cost']})",
+            'silhouette': f"Vidutinis siluetas ↑ (geriausias k={best['silhouette']})",
+        }
+        ylabels = {'cost': 'Atstumų iki medoidų suma', 'silhouette': 'Vidutinis siluetas'}
+        fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
+        for ax, col in zip(axes, ['cost', 'silhouette']):
+            ax.plot(sub['k'], sub[col], 'o-', markersize=3)
             ax.axvline(best[col], color='red', linestyle='--', linewidth=1)
-        ax.set_title(titles[col])
-        ax.set_xlabel('Klasterių skaičius k')
-        ax.grid(alpha=0.3)
-    fig.suptitle(f"Optimalaus klasterių skaičiaus nustatymas (k-medoids, {metric} atstumas, "
-                 f"k = 2…{k_max})")
-    fig.tight_layout()
-    fig.savefig(f"{out_dir}/kmedoids_{metric}_k_parinkimas.png", dpi=150)
-    plt.close(fig)
+            ax.set_title(titles[col])
+            ax.set_xlabel('Klasterių skaičius k')
+            ax.set_ylabel(ylabels[col])
+            ax.grid(alpha=0.3)
+        fig.suptitle(f"Optimalaus klasterių skaičiaus nustatymas (k-medoids, {metric} atstumas, "
+                     f"k = 2…{sub['k'].max()})")
+        fig.tight_layout()
+        fig.savefig(f"{out_dir}/kmedoids_{metric}_k_parinkimas{suffix}.png", dpi=150)
+        plt.close(fig)
+        return best
+
+    # Visas intervalas k = 2…k_max ir priartintas vaizdas k = 2…15
+    best = plot_k(tab, '')
+    best_15 = plot_k(tab[tab['k'] <= 15], '_iki15')
 
     print(tab.round(4).to_string(index=False))
-    print("Geriausi k:", best)
-    return tab, best
+    print(f"Geriausi k (k = 2…{k_max}):", best)
+    print("Geriausi k (k = 2…15):", best_15)
+    return tab, best, best_15
 
 
 if __name__ == '__main__':
