@@ -135,14 +135,17 @@ def elbow_point(ks, values):
     return int(ks[np.argmax(d)])
 
 
-def find_optimal_k(df, metric='euclidean', k_max=None, random_state=0,
+def find_optimal_k(df, metrics=('Cosine', 'Minkowski p=0.5'), k_max=None, random_state=0,
                    out_dir='exports/k_parinkimas'):
     """
     Optimalaus klasterių skaičiaus paieška k-medoids algoritmu originalioje erdvėje:
       - empirinis metodas: k ≈ sqrt(n/2) (naudojamas kaip viršutinė k riba),
       - Elbow metodas: k-medoids kaina (atstumų iki medoidų suma),
       - vidutinio silueto metodas.
+    Skaičiuojama kiekvienam atstumui iš `metrics` (raktai iš DISTANCES).
     Prieš klasterizavimą taikomas Robust Scaling.
+    Sukuriami du paveikslai: vidutinis siluetas (k = 2…k_max) ir Elbow (eilutės – atstumai,
+    stulpeliai – k = 2…k_max ir k = 2…15).
     """
     X = robust_scale(df, list(df.columns)).values
     n = len(X)
@@ -152,55 +155,67 @@ def find_optimal_k(df, metric='euclidean', k_max=None, random_state=0,
     if k_max is None:
         k_max = k_emp
 
-    D = pairwise_distances(X, metric=metric)
-
     rows = []
-    for k in range(2, k_max + 1):
-        res = kmedoids.fasterpam(D, k, random_state=random_state)
-        labels = res.labels
-        rows.append({
-            'k': k,
-            'cost': res.loss,
-            'silhouette': silhouette_score(D, labels, metric='precomputed'),
-        })
+    for name in metrics:
+        metric, kw = DISTANCES[name]
+        D = squareform(pdist(X, metric=metric, **kw))
+        for k in range(2, k_max + 1):
+            res = kmedoids.fasterpam(D, k, random_state=random_state)
+            rows.append({
+                'atstumas': name,
+                'k': k,
+                'cost': res.loss,
+                'silhouette': silhouette_score(D, res.labels, metric='precomputed'),
+            })
     tab = pd.DataFrame(rows)
 
     os.makedirs(out_dir, exist_ok=True)
-    tab.to_csv(f"{out_dir}/kmedoids_{metric}_k_lentele.csv", index=False)
+    tab.to_csv(f"{out_dir}/kmedoids_k_lentele.csv", index=False)
 
-    def plot_k(sub, suffix):
-        best = {
-            'cost': elbow_point(sub['k'].values, sub['cost'].values),
-            'silhouette': int(sub.loc[sub['silhouette'].idxmax(), 'k']),
-        }
-        titles = {
-            'cost': f"Elbow (alkūnė ties k={best['cost']})",
-            'silhouette': f"Vidutinis siluetas ↑ (geriausias k={best['silhouette']})",
-        }
-        ylabels = {'cost': 'Atstumų iki medoidų suma', 'silhouette': 'Vidutinis siluetas'}
-        fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
-        for ax, col in zip(axes, ['cost', 'silhouette']):
-            ax.plot(sub['k'], sub[col], 'o-', markersize=3)
-            ax.axvline(best[col], color='red', linestyle='--', linewidth=1)
-            ax.set_title(titles[col])
+    def sub_of(name, k_to):
+        return tab[(tab['atstumas'] == name) & (tab['k'] <= k_to)]
+
+    best = {name: {} for name in metrics}
+
+    # 1 paveikslas: vidutinis siluetas, k = 2…k_max (po vieną grafiką kiekvienam atstumui)
+    fig, axes = plt.subplots(1, len(metrics), figsize=(6 * len(metrics), 4.5), squeeze=False)
+    for ax, name in zip(axes[0], metrics):
+        sub = sub_of(name, k_max)
+        k_best = int(sub.loc[sub['silhouette'].idxmax(), 'k'])
+        best[name]['silhouette'] = k_best
+        ax.plot(sub['k'], sub['silhouette'], 'o-', markersize=3)
+        ax.axvline(k_best, color='red', linestyle='--', linewidth=1)
+        ax.set_title(f"{name} (geriausias k={k_best})")
+        ax.set_xlabel('Klasterių skaičius k')
+        ax.set_ylabel('Vidutinis siluetas')
+        ax.grid(alpha=0.3)
+    fig.suptitle(f"Vidutinio silueto metodas (k-medoids, k = 2…{k_max})")
+    fig.tight_layout()
+    fig.savefig(f"{out_dir}/kmedoids_siluetas.png", dpi=150)
+    plt.close(fig)
+
+    # 2 paveikslas: Elbow, eilutėse – atstumai, stulpeliuose – k = 2…k_max ir k = 2…15
+    k_ranges = [k_max, 15]
+    fig, axes = plt.subplots(len(metrics), 2, figsize=(12, 4.2 * len(metrics)), squeeze=False)
+    for row, name in zip(axes, metrics):
+        for ax, k_to in zip(row, k_ranges):
+            sub = sub_of(name, k_to)
+            k_best = elbow_point(sub['k'].values, sub['cost'].values)
+            best[name][f'elbow (k ≤ {k_to})'] = k_best
+            ax.plot(sub['k'], sub['cost'], 'o-', markersize=3)
+            ax.axvline(k_best, color='red', linestyle='--', linewidth=1)
+            ax.set_title(f"{name}, k = 2…{k_to} (alkūnė ties k={k_best})")
             ax.set_xlabel('Klasterių skaičius k')
-            ax.set_ylabel(ylabels[col])
+            ax.set_ylabel('Atstumų iki medoidų suma')
             ax.grid(alpha=0.3)
-        fig.suptitle(f"Optimalaus klasterių skaičiaus nustatymas (k-medoids, {metric} atstumas, "
-                     f"k = 2…{sub['k'].max()})")
-        fig.tight_layout()
-        fig.savefig(f"{out_dir}/kmedoids_{metric}_k_parinkimas{suffix}.png", dpi=150)
-        plt.close(fig)
-        return best
-
-    # Visas intervalas k = 2…k_max ir priartintas vaizdas k = 2…15
-    best = plot_k(tab, '')
-    best_15 = plot_k(tab[tab['k'] <= 15], '_iki15')
+    fig.suptitle("Elbow metodas (k-medoids)")
+    fig.tight_layout()
+    fig.savefig(f"{out_dir}/kmedoids_elbow.png", dpi=150)
+    plt.close(fig)
 
     print(tab.round(4).to_string(index=False))
-    print(f"Geriausi k (k = 2…{k_max}):", best)
-    print("Geriausi k (k = 2…15):", best_15)
-    return tab, best, best_15
+    print("Geriausi k:", best)
+    return tab, best
 
 
 def plot_dendrogram(df, method='single', k_max=15, p=30, out_dir='exports/k_parinkimas'):
@@ -324,7 +339,7 @@ if __name__ == '__main__':
     print(f"Išsaugota exports/duomenys/A28_cleaned.csv: {df_out.shape[0]} eilučių, {df_out.shape[1]} požymių")
 
     compare_distances(df_out)
-    find_optimal_k(df_out, metric='euclidean')
+    find_optimal_k(df_out, metrics=('Cosine', 'Minkowski p=0.5'))
     plot_dendrogram(df_out, method='single')
 
     plot_kmedoids_pca(df_out, k=4, metric='euclidean')
