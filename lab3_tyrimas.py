@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from scipy.cluster.hierarchy import dendrogram, fcluster, linkage
+from scipy.spatial.distance import pdist, squareform
 from sklearn.decomposition import PCA
 from sklearn.metrics import pairwise_distances, silhouette_score
 
@@ -87,6 +88,41 @@ def prepare_dataset(csv_path='A28.csv', out_path='exports/duomenys/A28_cleaned.c
 # ==============================================================================
 # 2. OPTIMALAUS KLASTERIŲ SKAIČIAUS NUSTATYMAS (EMPYRINIS, ELBOW, SILUETAS)
 # ==============================================================================
+DISTANCES = {
+    'Minkowski p=0.5': ('minkowski', {'p': 0.5}),
+    'Manhattan (p=1)': ('cityblock', {}),
+    'Euclidean (p=2)': ('euclidean', {}),
+    'Minkowski p=3': ('minkowski', {'p': 3}),
+    'Chebyshev (p=inf)': ('chebyshev', {}),
+    'Cosine': ('cosine', {}),
+}
+
+
+def compare_distances(df, ks=(2, 3, 4, 6), random_state=0, out_dir='exports/k_parinkimas'):
+    """
+    Atstumo mato įtakos išskirtims tyrimas k-medoids algoritmu (Robust Scaling erdvėje).
+    Lentelė: eilutėse – atstumai, stulpeliuose – k, langeliuose – klasterių dydžiai
+    (mažėjimo tvarka). Mažesnis Minkovskio p mažina vieno požymio ekstremalių skirtumų įtaką;
+    p < 1 nėra tikras atstumas (negalioja trikampio nelygybė).
+    """
+    X = robust_scale(df, list(df.columns)).values
+
+    tab = pd.DataFrame(index=pd.Index(list(DISTANCES), name='Atstumas'),
+                       columns=[f'k = {k}' for k in ks])
+    for name, (metric, kw) in DISTANCES.items():
+        D = squareform(pdist(X, metric=metric, **kw))
+        for k in ks:
+            labels = kmedoids.fasterpam(D, k, random_state=random_state).labels
+            sizes = np.sort(np.bincount(labels, minlength=k))[::-1]
+            tab.loc[name, f'k = {k}'] = ', '.join(map(str, sizes))
+
+    os.makedirs(out_dir, exist_ok=True)
+    tab.to_csv(f"{out_dir}/kmedoids_atstumu_palyginimas.csv")
+    print("k-medoids klasterių dydžiai su skirtingais atstumais:")
+    print(tab.to_string())
+    return tab
+
+
 def elbow_point(ks, values):
     """
     Elbow taško paieška: kreivė ir tiesė tarp pirmo ir paskutinio taško normuojamos į [0, 1],
@@ -287,6 +323,7 @@ if __name__ == '__main__':
     df_out = prepare_dataset()
     print(f"Išsaugota exports/duomenys/A28_cleaned.csv: {df_out.shape[0]} eilučių, {df_out.shape[1]} požymių")
 
+    compare_distances(df_out)
     find_optimal_k(df_out, metric='euclidean')
     plot_dendrogram(df_out, method='single')
 
