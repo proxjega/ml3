@@ -218,16 +218,20 @@ def find_optimal_k(df, metrics=('Cosine', 'Minkowski p=0.5'), k_max=None, random
     return tab, best
 
 
-def plot_dendrogram(df, method='single', k_max=15, p=30, out_dir='exports/k_parinkimas'):
+def plot_dendrogram(df, method='single', distance='Cosine', k_max=15, p=30,
+                    out_dir='exports/k_parinkimas'):
     """
-    AGNES (aglomeracinio hierarchinio klasterizavimo) dendrograma, Euklido atstumas.
+    AGNES (aglomeracinio hierarchinio klasterizavimo) dendrograma.
+    distance – atstumo pavadinimas iš DISTANCES (Ward jungimas galimas tik su Euklido atstumu).
     Prieš klasterizavimą taikomas Robust Scaling.
     Optimalus k parenkamas pagal didžiausią šuolį tarp paskutinių sujungimų aukščių:
     dendrograma kerpama per šio šuolio vidurį.
     Rodomi tik paskutiniai p sujungimai (truncate_mode='lastp'), nes objektų yra 4455.
     """
     X = robust_scale(df, list(df.columns)).values
-    Z = linkage(X, method=method, metric='euclidean')
+    metric, kw = DISTANCES[distance]
+    Z = linkage(pdist(X, metric=metric, **kw), method=method)
+    tag = f"{method}_{metric}" + (f"_p{kw['p']}" if 'p' in kw else '')
 
     # Sujungimų aukščiai mažėjimo tvarka: tarp h[i-1] ir h[i] kirpimas duoda i+1 klasterių
     h = Z[::-1, 2][:k_max]
@@ -236,9 +240,9 @@ def plot_dendrogram(df, method='single', k_max=15, p=30, out_dir='exports/k_pari
     k_best = best_i + 1
     cut = (h[best_i - 1] + h[best_i]) / 2
 
-    print(f"Dendrograma ({method}, euclidean): didžiausias šuolis ties k={k_best}, "
-          f"kirpimo aukštis={cut:.2f}")
-    print("Paskutinių sujungimų aukščiai:", np.round(h, 2))
+    print(f"Dendrograma ({method}, {distance}): didžiausias šuolis ties k={k_best}, "
+          f"kirpimo aukštis={cut:.4g}")
+    print("Paskutinių sujungimų aukščiai:", np.array2string(h, precision=4))
 
     # Single jungimas sukuria labai gilų (grandininį) medį – scipy piešimui reikia didesnės rekursijos ribos
     sys.setrecursionlimit(max(sys.getrecursionlimit(), 20000))
@@ -246,14 +250,14 @@ def plot_dendrogram(df, method='single', k_max=15, p=30, out_dir='exports/k_pari
     dendrogram(Z, truncate_mode='lastp', p=p, show_contracted=True, ax=ax,
                color_threshold=cut, above_threshold_color='grey')
     ax.axhline(cut, color='red', linestyle='--', linewidth=1,
-               label=f"Kirpimas: k={k_best} (aukštis {cut:.1f})")
-    ax.set_title(f"AGNES dendrograma ({method} jungimas, Euklido atstumas, paskutiniai {p} sujungimai)")
+               label=f"Kirpimas: k={k_best} (aukštis {cut:.4g})")
+    ax.set_title(f"AGNES dendrograma ({method} jungimas, {distance} atstumas, paskutiniai {p} sujungimai)")
     ax.set_xlabel("Objektai / sujungtų objektų grupės (skliaustuose – objektų skaičius)")
     ax.set_ylabel("Sujungimo atstumas")
     ax.legend()
     fig.tight_layout()
     os.makedirs(out_dir, exist_ok=True)
-    fig.savefig(f"{out_dir}/agnes_{method}_euclidean_dendrograma.png", dpi=150)
+    fig.savefig(f"{out_dir}/agnes_{tag}_dendrograma.png", dpi=150)
     plt.close(fig)
     return Z, k_best
 
@@ -326,7 +330,9 @@ def plot_agnes_pca(df, k=4, method='single', out_dir='exports/vizualizacija'):
     erdvėje, dendrogramą kerpa į k klasterių ir pavaizduoja klasterius PCA plokštumoje.
     """
     X = robust_scale(df, list(df.columns)).values
-    Z = linkage(X, method=method, metric='euclidean')
+    metric, kw = DISTANCES[distance]
+    Z = linkage(pdist(X, metric=metric, **kw), method=method)
+    tag = f"{method}_{metric}" + (f"_p{kw['p']}" if 'p' in kw else '')
     labels = fcluster(Z, t=k, criterion='maxclust') - 1   # klasteriai numeruojami nuo 0
 
     plot_clusters_pca(X, labels, f"AGNES klasteriai PCA erdvėje (k={k}, {method} jungimas, euclidean atstumas)",
@@ -340,7 +346,7 @@ if __name__ == '__main__':
 
     compare_distances(df_out)
     find_optimal_k(df_out, metrics=('Cosine', 'Minkowski p=0.5'))
-    plot_dendrogram(df_out, method='single')
+    plot_dendrogram(df_out, method='single', distance='Cosine')
 
     plot_kmedoids_pca(df_out, k=4, metric='euclidean')
     plot_agnes_pca(df_out, k=2, method='single')
