@@ -1,6 +1,10 @@
 import os
 
+import kmedoids
+import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
+from sklearn.metrics import pairwise_distances, silhouette_score
 
 
 # ==============================================================================
@@ -77,6 +81,84 @@ def prepare_dataset(csv_path='A28.csv', out_path='exports/duomenys/A28_cleaned.c
     return df_out
 
 
+# ==============================================================================
+# 2. OPTIMALAUS KLASTERIŲ SKAIČIAUS NUSTATYMAS (EMPYRINIS, ELBOW, SILUETAS)
+# ==============================================================================
+def elbow_point(ks, values):
+    """
+    Elbow taško paieška: kreivė ir tiesė tarp pirmo ir paskutinio taško normuojamos į [0, 1],
+    alkūne laikomas k, kurio taškas labiausiai nutolęs nuo tos tiesės.
+    """
+    x = (ks - ks.min()) / (ks.max() - ks.min())
+    y = (values - values.min()) / (values.max() - values.min())
+    dx, dy = x[-1] - x[0], y[-1] - y[0]
+    d = np.abs(dx * (y - y[0]) - dy * (x - x[0])) / np.hypot(dx, dy)
+    return int(ks[np.argmax(d)])
+
+
+def find_optimal_k(df, metric='euclidean', k_max=None, random_state=0,
+                   out_dir='exports/k_parinkimas'):
+    """
+    Optimalaus klasterių skaičiaus paieška k-medoids algoritmu originalioje erdvėje:
+      - empyrinis metodas: k ≈ sqrt(n/2) (naudojamas kaip viršutinė k riba),
+      - Elbow metodas: k-medoids kaina (atstumų iki medoidų suma),
+      - vidutinio silueto metodas.
+    Prieš klasterizavimą taikomas Robust Scaling.
+    """
+    X = robust_scale(df, list(df.columns)).values
+    n = len(X)
+
+    k_emp = int(round(np.sqrt(n / 2)))
+    print(f"Empyrinis metodas: k ≈ sqrt({n}/2) = {k_emp}")
+    if k_max is None:
+        k_max = k_emp
+
+    D = pairwise_distances(X, metric=metric)
+
+    rows = []
+    for k in range(2, k_max + 1):
+        res = kmedoids.fasterpam(D, k, random_state=random_state)
+        labels = res.labels
+        rows.append({
+            'k': k,
+            'cost': res.loss,
+            'silhouette': silhouette_score(D, labels, metric='precomputed'),
+        })
+    tab = pd.DataFrame(rows)
+
+    os.makedirs(out_dir, exist_ok=True)
+    tab.to_csv(f"{out_dir}/kmedoids_{metric}_k_lentele.csv", index=False)
+
+    best = {
+        'cost': elbow_point(tab['k'].values, tab['cost'].values),
+        'silhouette': int(tab.loc[tab['silhouette'].idxmax(), 'k']),
+    }
+
+    titles = {
+        'cost': f"Elbow (k-medoids kaina, alkūnė ties k={best['cost']})",
+        'silhouette': f"Vidutinis siluetas ↑ (geriausias k={best['silhouette']})",
+    }
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
+    for ax, col in zip(axes, ['cost', 'silhouette']):
+        ax.plot(tab['k'], tab[col], 'o-', markersize=3)
+        if col in best:
+            ax.axvline(best[col], color='red', linestyle='--', linewidth=1)
+        ax.set_title(titles[col])
+        ax.set_xlabel('Klasterių skaičius k')
+        ax.grid(alpha=0.3)
+    fig.suptitle(f"Optimalaus klasterių skaičiaus nustatymas (k-medoids, {metric} atstumas, "
+                 f"k = 2…{k_max})")
+    fig.tight_layout()
+    fig.savefig(f"{out_dir}/kmedoids_{metric}_k_parinkimas.png", dpi=150)
+    plt.close(fig)
+
+    print(tab.round(4).to_string(index=False))
+    print("Geriausi k:", best)
+    return tab, best
+
+
 if __name__ == '__main__':
     df_out = prepare_dataset()
     print(f"Išsaugota exports/duomenys/A28_cleaned.csv: {df_out.shape[0]} eilučių, {df_out.shape[1]} požymių")
+
+    find_optimal_k(df_out, metric='euclidean')
