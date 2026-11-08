@@ -5,7 +5,7 @@ import kmedoids
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from scipy.cluster.hierarchy import dendrogram, linkage
+from scipy.cluster.hierarchy import dendrogram, fcluster, linkage
 from sklearn.decomposition import PCA
 from sklearn.metrics import pairwise_distances, silhouette_score
 
@@ -208,35 +208,31 @@ def plot_dendrogram(df, method='single', k_max=15, p=30, out_dir='exports/k_pari
 
 
 # ==============================================================================
-# 3. K-MEDOIDS KLASTERIŲ VIZUALIZACIJA PCA ERDVĖJE
+# 3. KLASTERIŲ VIZUALIZACIJA PCA ERDVĖJE (K-MEDOIDS, AGNES)
 # ==============================================================================
-def plot_kmedoids_pca(df, k=4, metric='euclidean', random_state=0,
-                      out_dir='exports/vizualizacija'):
+def plot_clusters_pca(X, labels, title, out_path, centers=None, random_state=0):
     """
-    Suklasterizuoja duomenis k-medoids algoritmu originalioje (Robust Scaling) erdvėje
-    ir pavaizduoja klasterius pirmųjų dviejų PCA komponenčių plokštumoje.
+    Pavaizduoja klasterius pirmųjų dviejų PCA komponenčių plokštumoje.
     Kairėje – visi objektai, dešinėje – priartintas vaizdas (1–99 procentilių ribos).
+    centers – klasterių centrų (pvz., medoidų) indeksai, jei jie yra.
     """
-    X = robust_scale(df, list(df.columns)).values
-    D = pairwise_distances(X, metric=metric)
-    res = kmedoids.fasterpam(D, k, random_state=random_state)
-    labels = res.labels
-
     pca = PCA(n_components=2, random_state=random_state)
     Z = pca.fit_transform(X)
     evr = pca.explained_variance_ratio_ * 100
 
-    sizes = np.bincount(labels, minlength=k)
-    print(f"k-medoids (k={k}, {metric}) klasterių dydžiai:", dict(enumerate(sizes)))
+    clusters = np.unique(labels)
+    sizes = {int(c): int((labels == c).sum()) for c in clusters}
+    print(f"{title} – klasterių dydžiai:", sizes)
     print(f"PCA paaiškinta dispersija: PC1={evr[0]:.1f} %, PC2={evr[1]:.1f} %")
 
     fig, axes = plt.subplots(1, 2, figsize=(13, 5.5))
     for ax, zoom in zip(axes, [False, True]):
-        for c in range(k):
+        for c in clusters:
             m = labels == c
             ax.scatter(Z[m, 0], Z[m, 1], s=6, alpha=0.6, label=f"Klasteris {c} (n={sizes[c]})")
-        ax.scatter(Z[res.medoids, 0], Z[res.medoids, 1], marker='X', s=120,
-                   c='black', edgecolors='white', label='Medoidai')
+        if centers is not None:
+            ax.scatter(Z[centers, 0], Z[centers, 1], marker='X', s=120,
+                       c='black', edgecolors='white', label='Medoidai')
         if zoom:
             lo, hi = np.percentile(Z, [1, 99], axis=0)
             pad = (hi - lo) * 0.05
@@ -249,11 +245,41 @@ def plot_kmedoids_pca(df, k=4, metric='euclidean', random_state=0,
         ax.set_ylabel(f"PC2 ({evr[1]:.1f} %)")
         ax.grid(alpha=0.3)
     axes[0].legend(fontsize=8, markerscale=2)
-    fig.suptitle(f"k-medoids klasteriai PCA erdvėje (k={k}, {metric} atstumas)")
+    fig.suptitle(title)
     fig.tight_layout()
-    os.makedirs(out_dir, exist_ok=True)
-    fig.savefig(f"{out_dir}/kmedoids_{metric}_k{k}_pca.png", dpi=150)
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    fig.savefig(out_path, dpi=150)
     plt.close(fig)
+
+
+def plot_kmedoids_pca(df, k=4, metric='euclidean', random_state=0,
+                      out_dir='exports/vizualizacija'):
+    """
+    Suklasterizuoja duomenis k-medoids algoritmu originalioje (Robust Scaling) erdvėje
+    ir pavaizduoja klasterius PCA plokštumoje.
+    """
+    X = robust_scale(df, list(df.columns)).values
+    D = pairwise_distances(X, metric=metric)
+    res = kmedoids.fasterpam(D, k, random_state=random_state)
+    labels = res.labels
+
+    plot_clusters_pca(X, labels, f"k-medoids klasteriai PCA erdvėje (k={k}, {metric} atstumas)",
+                      f"{out_dir}/kmedoids_{metric}_k{k}_pca.png",
+                      centers=res.medoids, random_state=random_state)
+    return labels
+
+
+def plot_agnes_pca(df, k=4, method='single', out_dir='exports/vizualizacija'):
+    """
+    Suklasterizuoja duomenis AGNES algoritmu (Euklido atstumas) originalioje (Robust Scaling)
+    erdvėje, dendrogramą kerpa į k klasterių ir pavaizduoja klasterius PCA plokštumoje.
+    """
+    X = robust_scale(df, list(df.columns)).values
+    Z = linkage(X, method=method, metric='euclidean')
+    labels = fcluster(Z, t=k, criterion='maxclust') - 1   # klasteriai numeruojami nuo 0
+
+    plot_clusters_pca(X, labels, f"AGNES klasteriai PCA erdvėje (k={k}, {method} jungimas, euclidean atstumas)",
+                      f"{out_dir}/agnes_{method}_euclidean_k{k}_pca.png")
     return labels
 
 
@@ -265,3 +291,4 @@ if __name__ == '__main__':
     plot_dendrogram(df_out, method='single')
 
     plot_kmedoids_pca(df_out, k=4, metric='euclidean')
+    plot_agnes_pca(df_out, k=2, method='single')
