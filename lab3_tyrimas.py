@@ -324,10 +324,11 @@ def plot_kmedoids_pca(df, k=4, metric='euclidean', random_state=0,
     return labels
 
 
-def plot_agnes_pca(df, k=4, method='single', out_dir='exports/vizualizacija'):
+def plot_agnes_pca(df, k=3, method='single', distance='Cosine', out_dir='exports/vizualizacija'):
     """
-    Suklasterizuoja duomenis AGNES algoritmu (Euklido atstumas) originalioje (Robust Scaling)
-    erdvėje, dendrogramą kerpa į k klasterių ir pavaizduoja klasterius PCA plokštumoje.
+    Suklasterizuoja duomenis AGNES algoritmu originalioje (Robust Scaling) erdvėje,
+    dendrogramą kerpa į k klasterių ir pavaizduoja klasterius PCA plokštumoje.
+    distance – atstumo pavadinimas iš DISTANCES.
     """
     X = robust_scale(df, list(df.columns)).values
     metric, kw = DISTANCES[distance]
@@ -335,8 +336,8 @@ def plot_agnes_pca(df, k=4, method='single', out_dir='exports/vizualizacija'):
     tag = f"{method}_{metric}" + (f"_p{kw['p']}" if 'p' in kw else '')
     labels = fcluster(Z, t=k, criterion='maxclust') - 1   # klasteriai numeruojami nuo 0
 
-    plot_clusters_pca(X, labels, f"AGNES klasteriai PCA erdvėje (k={k}, {method} jungimas, euclidean atstumas)",
-                      f"{out_dir}/agnes_{method}_euclidean_k{k}_pca.png")
+    plot_clusters_pca(X, labels, f"AGNES klasteriai PCA erdvėje (k={k}, {method} jungimas, {distance} atstumas)",
+                      f"{out_dir}/agnes_{tag}_k{k}_pca.png")
     return labels
 
 
@@ -348,5 +349,5 @@ if __name__ == '__main__':
     find_optimal_k(df_out, metrics=('Cosine', 'Minkowski p=0.5'))
     plot_dendrogram(df_out, method='single', distance='Cosine')
 
-    plot_kmedoids_pca(df_out, k=4, metric='euclidean')
-    plot_agnes_pca(df_out, k=2, method='single')
+    plot_kmedoids_pca(df_out, k=3, metric='Cosine')
+    plot_agnes_pca(df_out, k=3, method='single', distance='Cosine')
