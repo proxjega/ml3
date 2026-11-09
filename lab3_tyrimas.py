@@ -136,7 +136,7 @@ def elbow_point(ks, values):
 
 
 def find_optimal_k(df, metrics=('Cosine', 'Minkowski p=0.5'), k_max=None, random_state=0,
-                   out_dir='exports/k_parinkimas'):
+                   min_samples=None, out_dir='exports/k_parinkimas'):
     """
     Optimalaus klasterių skaičiaus paieška k-medoids algoritmu originalioje erdvėje:
       - empirinis metodas: k ≈ sqrt(n/2) (naudojamas kaip viršutinė k riba),
@@ -146,6 +146,8 @@ def find_optimal_k(df, metrics=('Cosine', 'Minkowski p=0.5'), k_max=None, random
     Prieš klasterizavimą taikomas Robust Scaling.
     Sukuriami du paveikslai: vidutinis siluetas (k = 2…k_max) ir Elbow (eilutės – atstumai,
     stulpeliai – k = 2…k_max ir k = 2…15).
+    Papildomai DBSCAN eps parinkimui nubraižomas k-distance grafikas (žr. plot_k_distance);
+    min_samples pagal nutylėjimą = 2 · požymių skaičius.
     """
     X = robust_scale(df, list(df.columns)).values
     n = len(X)
@@ -155,10 +157,16 @@ def find_optimal_k(df, metrics=('Cosine', 'Minkowski p=0.5'), k_max=None, random
     if k_max is None:
         k_max = k_emp
 
+    if min_samples is None:
+        min_samples = 2 * X.shape[1]
+
     rows = []
+    k_dists = {}
     for name in metrics:
         metric, kw = DISTANCES[name]
         D = squareform(pdist(X, metric=metric, **kw))
+        # Atstumas iki min_samples-ojo kaimyno (pats taškas įskaičiuojamas, kaip sklearn DBSCAN)
+        k_dists[name] = np.sort(np.partition(D, min_samples - 1, axis=1)[:, min_samples - 1])
         for k in range(2, k_max + 1):
             res = kmedoids.fasterpam(D, k, random_state=random_state)
             rows.append({
@@ -215,7 +223,51 @@ def find_optimal_k(df, metrics=('Cosine', 'Minkowski p=0.5'), k_max=None, random
 
     print(tab.round(4).to_string(index=False))
     print("Geriausi k:", best)
+
+    eps = plot_k_distance(k_dists, min_samples, out_dir=out_dir)
+    for name in metrics:
+        best[name]['dbscan eps'] = eps[name]
     return tab, best
+
+
+def plot_k_distance(k_dists, min_samples, out_dir='exports/k_parinkimas'):
+    """
+    DBSCAN eps parinkimas k-distance grafiku (Elbow metodas).
+    k_dists – {atstumas: atstumų iki min_samples-ojo kaimyno masyvas, surikiuotas didėjimo tvarka}.
+    eps imamas ties kreivės alkūne – labiausiai po tiese tarp pirmo ir paskutinio taško
+    nutolusiu tašku. Eilutėse – atstumai, stulpeliuose –
+    visi objektai ir 99 % objektų (be didžiausių atstumų, kurie suspaudžia kreivės pradžią).
+    """
+    eps = {}
+    fig, axes = plt.subplots(len(k_dists), 2, figsize=(12, 4.2 * len(k_dists)), squeeze=False)
+    for row, (name, kd) in zip(axes, k_dists.items()):
+        for ax, frac in zip(row, [1.0, 0.99]):
+            y = kd[:int(np.ceil(len(kd) * frac))]
+            x = np.arange(len(y))
+            # Didėjančios kreivės alkūnė yra po tiese tarp pirmo ir paskutinio taško:
+            # normuotose koordinatėse imamas taškas, kuriam x - y didžiausias
+            xn, yn = x / x[-1], (y - y[0]) / (y[-1] - y[0])
+            i_best = int(np.argmax(xn - yn))
+            e = float(y[i_best])
+            eps.setdefault(name, {})[f'{frac:.0%}'] = e
+            ax.plot(x, y, linewidth=1.2)
+            ax.axhline(e, color='red', linestyle='--', linewidth=1)
+            ax.axvline(i_best, color='red', linestyle=':', linewidth=1)
+            log = y[-1] / np.median(y) > 20
+            if log:
+                ax.set_yscale('log')   # kelios didelės išskirtys kitaip suspaudžia visą kreivę
+            ax.set_title(f"{name}, {frac:.0%} objektų{' (log skalė)' if log else ''} "
+                         f"(alkūnė: eps≈{e:.4g})")
+            ax.set_xlabel('Objektai (surikiuoti pagal atstumą)')
+            ax.set_ylabel(f'Atstumas iki {min_samples}-ojo kaimyno')
+            ax.grid(alpha=0.3)
+    fig.suptitle(f"DBSCAN eps parinkimas: k-distance grafikas (min_samples={min_samples})")
+    fig.tight_layout()
+    os.makedirs(out_dir, exist_ok=True)
+    fig.savefig(f"{out_dir}/dbscan_k_distance.png", dpi=150)
+    plt.close(fig)
+    print(f"DBSCAN eps (min_samples={min_samples}):", eps)
+    return eps
 
 
 def plot_dendrogram(df, method='single', distance='Cosine', k_max=15, p=30,
