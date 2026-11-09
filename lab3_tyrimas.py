@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 from scipy.cluster.hierarchy import dendrogram, fcluster, linkage
 from scipy.spatial.distance import pdist, squareform
+from sklearn.cluster import DBSCAN
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 from sklearn.metrics import silhouette_score
@@ -137,7 +138,8 @@ def elbow_point(ks, values):
 
 
 def find_optimal_k(df, metrics=('Cosine', 'Minkowski p=0.5'), k_max=None, random_state=0,
-                   min_samples=None, out_dir='exports/k_parinkimas'):
+                   dbscan_distance='Cosine', min_samples=None, dbscan_eps=None,
+                   out_dir='exports/k_parinkimas'):
     """
     Optimalaus klasterių skaičiaus paieška k-medoids algoritmu originalioje erdvėje:
       - empirinis metodas: k ≈ sqrt(n/2) (naudojamas kaip viršutinė k riba),
@@ -147,8 +149,11 @@ def find_optimal_k(df, metrics=('Cosine', 'Minkowski p=0.5'), k_max=None, random
     Prieš klasterizavimą taikomas Robust Scaling.
     Sukuriami du paveikslai: vidutinis siluetas (k = 2…k_max) ir Elbow (eilutės – atstumai,
     stulpeliai – k = 2…k_max ir k = 2…15).
-    Papildomai DBSCAN eps parinkimui nubraižomas k-distance grafikas (žr. plot_k_distance);
-    min_samples pagal nutylėjimą = 2 · požymių skaičius.
+    Papildomai DBSCAN (atstumas dbscan_distance, nepriklauso nuo `metrics`):
+      - eps parinkimui nubraižomas k-distance grafikas (žr. plot_k_distance),
+        min_samples pagal nutylėjimą = 2 · požymių skaičius;
+      - paleidžiamas DBSCAN su dbscan_eps; jei jis nenurodytas – imamas k-distance
+        alkūnės eps iš 99 % objektų grafiko.
     """
     X = robust_scale(df, list(df.columns)).values
     n = len(X)
@@ -162,12 +167,9 @@ def find_optimal_k(df, metrics=('Cosine', 'Minkowski p=0.5'), k_max=None, random
         min_samples = 2 * X.shape[1]
 
     rows = []
-    k_dists = {}
     for name in metrics:
         metric, kw = DISTANCES[name]
         D = squareform(pdist(X, metric=metric, **kw))
-        # Atstumas iki min_samples-ojo kaimyno (pats taškas įskaičiuojamas, kaip sklearn DBSCAN)
-        k_dists[name] = np.sort(np.partition(D, min_samples - 1, axis=1)[:, min_samples - 1])
         for k in range(2, k_max + 1):
             res = kmedoids.fasterpam(D, k, random_state=random_state)
             rows.append({
@@ -225,9 +227,25 @@ def find_optimal_k(df, metrics=('Cosine', 'Minkowski p=0.5'), k_max=None, random
     print(tab.round(4).to_string(index=False))
     print("Geriausi k:", best)
 
-    eps = plot_k_distance(k_dists, min_samples, out_dir=out_dir)
-    for name in metrics:
-        best[name]['dbscan eps'] = eps[name]
+    # DBSCAN: atstumas iki min_samples-ojo kaimyno (pats taškas įskaičiuojamas, kaip sklearn DBSCAN)
+    metric, kw = DISTANCES[dbscan_distance]
+    D = squareform(pdist(X, metric=metric, **kw))
+    k_dist = np.sort(np.partition(D, min_samples - 1, axis=1)[:, min_samples - 1])
+    eps = plot_k_distance({dbscan_distance: k_dist}, min_samples, out_dir=out_dir)[dbscan_distance]
+    e = dbscan_eps if dbscan_eps is not None else eps['99%']
+
+    labels = DBSCAN(eps=e, min_samples=min_samples, metric='precomputed').fit_predict(D)
+    n_clusters = len(set(labels) - {-1})
+    n_noise = int((labels == -1).sum())
+    sizes = np.sort(np.bincount(labels[labels >= 0]))[::-1] if n_clusters else []
+    best['DBSCAN'] = {'atstumas': dbscan_distance, 'eps': e, 'klasteriai': n_clusters}
+    dbscan_tab = pd.DataFrame([{'atstumas': dbscan_distance, 'eps': e, 'min_samples': min_samples,
+                                'klasteriai': n_clusters, 'triukšmas': n_noise,
+                                'triukšmo dalis %': round(100 * n_noise / n, 2),
+                                'klasterių dydžiai': ', '.join(map(str, sizes))}])
+    dbscan_tab.to_csv(f"{out_dir}/dbscan_rezultatai.csv", index=False)
+    print("DBSCAN rezultatai:")
+    print(dbscan_tab.to_string(index=False))
     return tab, best
 
 
@@ -448,7 +466,7 @@ if __name__ == '__main__':
     print(f"Išsaugota exports/duomenys/A28_cleaned.csv: {df_out.shape[0]} eilučių, {df_out.shape[1]} požymių")
 
     compare_distances(df_out)
-    find_optimal_k(df_out, metrics=('Euclidean (p=2)',))
+    find_optimal_k(df_out, metrics=('Euclidean (p=2)',), dbscan_distance='Cosine')
     plot_dendrogram(df_out, method='single', distance='Cosine')
 
     plot_kmedoids_pca(df_out, k=3, distance='Cosine')
