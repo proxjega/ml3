@@ -398,7 +398,7 @@ if __name__ == '__main__':
     print(f"Išsaugota exports/duomenys/A28_cleaned.csv: {df_out.shape[0]} eilučių, {df_out.shape[1]} požymių")
 
     compare_distances(df_out)
-    find_optimal_k(df_out, metrics=('Cosine', 'Minkowski p=0.5'))
+    find_optimal_k(df_out, metrics=('Euclidean (p=2)',))
     plot_dendrogram(df_out, method='single', distance='Cosine')
 
     plot_kmedoids_pca(df_out, k=3, metric='Cosine')
