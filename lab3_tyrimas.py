@@ -33,7 +33,9 @@ def prepare_dataset(csv_path='A28.csv', out_path='exports/duomenys/A28_cleaned.c
       - ekstremalios išskirtys (už Q1 - k*IQR, Q3 + k*IQR ribų, k=3) pakeičiamos ribine reikšme,
       - pašalinami mažo kintamumo / mažo Eta2 požymiai (CV < 0.01 ir Eta2 < 0.01),
       - pašalinami stipriai koreliuoti požymiai (Spearman |rho| > 0.95),
-      - pašalinamas 'class' stulpelis.
+      - 'class' stulpelis atskiriamas nuo požymių (klasterizavime nenaudojamas, bet
+        išsaugomas klasterių palyginimui su tikrosiomis klasėmis).
+    Grąžina (požymių DataFrame, klasių Series).
     Robust scaling bus taikomas veliau (kadangi stabilumo eksperimentui bus imama 80% imties).
     """
     df = pd.read_csv(csv_path)
@@ -90,11 +92,13 @@ def prepare_dataset(csv_path='A28.csv', out_path='exports/duomenys/A28_cleaned.c
 
     cols_A = [c for c in cols_B if c not in dropped_step2]
 
-    # Išsaugoma išvalyta aibė be 'class' stulpelio ir be robust scaling
+    # Išsaugoma išvalyta aibė be robust scaling; 'class' paliekamas paskutiniame stulpelyje,
+    # bet į klasterizavimui naudojamus požymius neįtraukiamas
     df_out = df_clean[cols_A]
+    y = df_clean['class']
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    df_out.to_csv(out_path, index=False)
-    return df_out
+    df_clean[cols_A + ['class']].to_csv(out_path, index=False)
+    return df_out, y
 
 
 # ==============================================================================
@@ -472,7 +476,7 @@ def plot_agnes_tsne(df, k=3, method='single', distance='Cosine', perplexity=30, 
 
 
 if __name__ == '__main__':
-    df_out = prepare_dataset()
+    df_out, y = prepare_dataset()
     print(f"Išsaugota exports/duomenys/A28_cleaned.csv: {df_out.shape[0]} eilučių, {df_out.shape[1]} požymių")
 
     compare_distances(df_out)
