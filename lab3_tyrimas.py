@@ -425,5 +425,5 @@ if __name__ == '__main__':
     print(f"Išsaugota exports/duomenys/A28_cleaned.csv: {df_out.shape[0]} eilučių, {df_out.shape[1]} požymių")
 
     find_optimal_k(df_out)
-    plot_dendrogram(df_out, method='single')
+    plot_dendrogram(df_out, method='ward')
 
