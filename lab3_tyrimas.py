@@ -308,81 +308,89 @@ def plot_dendrogram(df, method='single', k_max=15, p=30, out_dir='exports/k_pari
 # ==============================================================================
 # 3. PARAMETRŲ ANALIZĖ IR KLASTERIZAVIMAS PRADINĖJE ERDVĖJE
 # ==============================================================================
-def plot_clusters_2d(Z, labels, title, out_path, xlabel, ylabel, centers=None, zoom=True,
-                     outliers=None):
+def draw_clusters(ax, Z, labels, title, xlabel, ylabel, centers=None, outliers=None):
     """
-    Pavaizduoja klasterius dvimatėje projekcijoje Z.
-    Jei zoom=True: kairėje – visi objektai, dešinėje – priartintas vaizdas (1–99 procentilių ribos).
+    Nupiešia klasterius dvimatėje projekcijoje Z ant pateiktos ašies ax.
     centers – klasterių centrų (pvz., medoidų) indeksai, jei jie yra.
     outliers – išskirčių kaukė (iš prepare_dataset): išskirtys piešiamos klasterio spalva,
     bet kryželiu ('x'), kiti objektai – tašku.
     """
+    labels = np.asarray(labels)
     clusters = np.unique(labels)
     sizes = {int(c): int((labels == c).sum()) for c in clusters}
     print(f"{title} – klasterių dydžiai:", sizes)
 
-    views = [False, True] if zoom else [False]
-    fig, axes = plt.subplots(1, len(views), figsize=(13 if zoom else 10, 5.5 if zoom else 7),
-                             squeeze=False)
-    axes = axes[0]
     out = np.asarray(outliers, dtype=bool) if outliers is not None else np.zeros(len(labels), bool)
-    for ax, zoomed in zip(axes, views):
-        for i, c in enumerate(clusters):
-            color = f"C{i % 10}"
-            m = labels == c
-            ax.scatter(Z[m & ~out, 0], Z[m & ~out, 1], s=6, alpha=0.6, color=color,
-                       label=f"Klasteris {c} (n={sizes[c]})")
-            ax.scatter(Z[m & out, 0], Z[m & out, 1], s=14, alpha=0.8, color=color,
-                       marker='x', linewidths=0.7)
-        if out.any():
-            ax.scatter([], [], s=14, color='black', marker='x',
-                       label=f"Išskirtys (n={int(out.sum())})")
-        if centers is not None:
-            ax.scatter(Z[centers, 0], Z[centers, 1], marker='X', s=120,
-                       c='black', edgecolors='white', label='Medoidai')
-        if zoomed:
-            lo, hi = np.percentile(Z, [1, 99], axis=0)
-            pad = (hi - lo) * 0.05
-            ax.set_xlim(lo[0] - pad[0], hi[0] + pad[0])
-            ax.set_ylim(lo[1] - pad[1], hi[1] + pad[1])
-            ax.set_title("Priartintas vaizdas (1–99 procentilės)")
-        elif zoom:
-            ax.set_title("Visi objektai")
-        ax.set_xlabel(xlabel)
-        ax.set_ylabel(ylabel)
-        ax.grid(alpha=0.3)
-    axes[0].legend(fontsize=8, markerscale=2)
-    fig.suptitle(title)
+    for i, c in enumerate(clusters):
+        color = f"C{i % 10}"
+        m = labels == c
+        ax.scatter(Z[m & ~out, 0], Z[m & ~out, 1], s=6, alpha=0.6, color=color,
+                   label=f"Klasteris {c} (n={sizes[c]})")
+        ax.scatter(Z[m & out, 0], Z[m & out, 1], s=14, alpha=0.8, color=color,
+                   marker='x', linewidths=0.7)
+    if out.any():
+        ax.scatter([], [], s=14, color='black', marker='x',
+                   label=f"Išskirtys (n={int(out.sum())})")
+    if centers is not None:
+        ax.scatter(Z[centers, 0], Z[centers, 1], marker='X', s=120,
+                   c='black', edgecolors='white', label='Medoidai')
+    ax.set_title(title)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.grid(alpha=0.3)
+    ax.legend(fontsize=8, markerscale=2)
+
+
+def plot_panels(panels, suptitle, out_path):
+    """
+    Išsaugo vieną paveikslą su keliais klasterių grafikais vienoje eilutėje.
+    panels – žodynų sąrašas su draw_clusters argumentais (Z, labels, title, xlabel, ylabel, ...).
+    """
+    fig, axes = plt.subplots(1, len(panels), figsize=(6.5 * len(panels), 6), squeeze=False)
+    for ax, p in zip(axes[0], panels):
+        draw_clusters(ax, **p)
+    fig.suptitle(suptitle)
     fig.tight_layout()
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
 
 
-def plot_clusters_pca(X, labels, title, out_path, centers=None, random_state=0, outliers=None):
-    """Pavaizduoja klasterius pirmųjų dviejų PCA komponenčių plokštumoje."""
+def pca_embedding(X, random_state=0):
+    """Pirmosios dvi PCA komponentės ir jų ašių pavadinimai (su paaiškinta dispersija)."""
     pca = PCA(n_components=2, random_state=random_state)
     Z = pca.fit_transform(X)
     evr = pca.explained_variance_ratio_ * 100
     print(f"PCA paaiškinta dispersija: PC1={evr[0]:.1f} %, PC2={evr[1]:.1f} %")
-    plot_clusters_2d(Z, labels, title, out_path, f"PC1 ({evr[0]:.1f} %)", f"PC2 ({evr[1]:.1f} %)",
-                     centers=centers, outliers=outliers)
+    return Z, f"PC1 ({evr[0]:.1f} %)", f"PC2 ({evr[1]:.1f} %)"
 
 
-def plot_clusters_tsne(D, labels, title, out_path, centers=None, perplexity=30, random_state=0,
-                       outliers=None):
+def tsne_embedding(D, perplexity=30, random_state=0):
     """
-    Pavaizduoja klasterius t-SNE plokštumoje.
-    D – iš anksto apskaičiuota atstumų matrica (tas pats atstumas, kuriuo klasterizuota).
+    t-SNE projekcija iš atstumų matricos D (tas pats atstumas, kuriuo klasterizuota).
     t-SNE išlaiko vietinę kaimynystę, bet atstumai tarp klasterių ir jų dydžiai plokštumoje
-    nėra interpretuojami; išskirtys nesuspaudžia vaizdo, todėl priartinimas nereikalingas.
+    nėra interpretuojami.
     """
     tsne = TSNE(n_components=2, perplexity=perplexity, metric='precomputed', init='random',
                 random_state=random_state)
     Z = tsne.fit_transform(D)
     print(f"t-SNE (perplexity={perplexity}): KL divergencija={tsne.kl_divergence_:.4f}")
-    plot_clusters_2d(Z, labels, title, out_path, "t-SNE 1", "t-SNE 2", centers=centers, zoom=False,
-                     outliers=outliers)
+    return Z
+
+
+def plot_clusters_pca(X, labels, title, out_path, centers=None, random_state=0, outliers=None):
+    """Pavaizduoja klasterius pirmųjų dviejų PCA komponenčių plokštumoje."""
+    Z, xl, yl = pca_embedding(X, random_state)
+    plot_panels([dict(Z=Z, labels=labels, title='', xlabel=xl, ylabel=yl,
+                      centers=centers, outliers=outliers)], title, out_path)
+
+
+def plot_clusters_tsne(D, labels, title, out_path, centers=None, perplexity=30, random_state=0,
+                       outliers=None):
+    """Pavaizduoja klasterius t-SNE plokštumoje."""
+    Z = tsne_embedding(D, perplexity, random_state)
+    plot_panels([dict(Z=Z, labels=labels, title='', xlabel='t-SNE 1', ylabel='t-SNE 2',
+                      centers=centers, outliers=outliers)], title, out_path)
 
 
 def kmedoids_cluster(df, k, random_state=0, metric='euclidean'):
@@ -489,24 +497,31 @@ def kmedoids_original_space(df, y, k=2, metrics=('euclidean', 'cityblock'), perp
                             out_dir='exports/klasterizavimas_pradineje_erdveje'):
     """
     k-medoids klasterizavimas pradinėje (Robust Scaling) erdvėje su skirtingais atstumais.
-    Kiekvienam atstumui: apskaičiuojami vidiniai ir išoriniai matai, klasteriai pavaizduojami
-    PCA ir t-SNE plokštumose (t-SNE skaičiuojamas iš to paties atstumo matricos).
+    Kiekvienam atstumui apskaičiuojami vidiniai ir išoriniai matai.
+    Sukuriami du palyginimo paveikslai (po vieną grafiką kiekvienam atstumui):
+      - PCA plokštumoje (projekcija ta pati, skiriasi tik klasteriai),
+      - t-SNE plokštumoje (t-SNE skaičiuojamas iš to paties atstumo matricos, kuria klasterizuota).
     Matai išsaugomi {out_dir}/kmedoids_k{k}_matai.csv.
     """
-    rows = []
+    rows, pca_panels, tsne_panels = [], [], []
+    Z_pca = None
     for metric in metrics:
         mname = METRIC_NAMES.get(metric, metric)
         X, D, res = kmedoids_cluster(df, k, random_state, metric=metric)
         rows.append(evaluate_clustering(X, res.labels, y, f"k-medoids (k={k}, {mname})", D=D))
-        plot_clusters_pca(X, res.labels, f"k-medoids klasteriai PCA erdvėje (k={k}, {mname} atstumas)",
-                          f"{out_dir}/kmedoids_k{k}_{metric}_pca.png",
-                          centers=res.medoids, random_state=random_state, outliers=outliers)
-        plot_clusters_tsne(D, res.labels,
-                           f"k-medoids klasteriai t-SNE erdvėje (k={k}, {mname} atstumas, "
-                           f"perplexity={perplexity})",
-                           f"{out_dir}/kmedoids_k{k}_{metric}_tsne.png",
-                           centers=res.medoids, perplexity=perplexity, random_state=random_state,
-                           outliers=outliers)
+        if Z_pca is None:
+            Z_pca, xl, yl = pca_embedding(X, random_state)
+        common = dict(labels=res.labels, title=f"{mname} atstumas", centers=res.medoids,
+                      outliers=outliers)
+        pca_panels.append(dict(Z=Z_pca, xlabel=xl, ylabel=yl, **common))
+        tsne_panels.append(dict(Z=tsne_embedding(D, perplexity, random_state),
+                                xlabel='t-SNE 1', ylabel='t-SNE 2', **common))
+
+    plot_panels(pca_panels, f"k-medoids klasteriai PCA erdvėje (k={k})",
+                f"{out_dir}/kmedoids_k{k}_pca.png")
+    plot_panels(tsne_panels, f"k-medoids klasteriai t-SNE erdvėje (k={k}, perplexity={perplexity})",
+                f"{out_dir}/kmedoids_k{k}_tsne.png")
+
     tab = pd.DataFrame(rows)
     os.makedirs(out_dir, exist_ok=True)
     tab.to_csv(f"{out_dir}/kmedoids_k{k}_matai.csv", index=False)
