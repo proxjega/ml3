@@ -10,7 +10,9 @@ from scipy.spatial.distance import pdist, squareform
 from sklearn.cluster import DBSCAN
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
-from sklearn.metrics import silhouette_score
+from sklearn.metrics import (adjusted_rand_score, calinski_harabasz_score, davies_bouldin_score,
+                             normalized_mutual_info_score, silhouette_score)
+from sklearn.metrics.cluster import pair_confusion_matrix
 
 
 # ==============================================================================
@@ -297,7 +299,7 @@ def plot_dendrogram(df, method='single', k_max=15, p=30, out_dir='exports/k_pari
 
 
 # ==============================================================================
-# 3. KLASTERIŲ VIZUALIZACIJA PCA IR t-SNE ERDVĖSE (K-MEDOIDS, AGNES)
+# 3. PARAMETRŲ ANALIZĖ IR KLASTERIZAVIMAS PRADINĖJE ERDVĖJE
 # ==============================================================================
 def plot_clusters_2d(Z, labels, title, out_path, xlabel, ylabel, centers=None, zoom=True):
     """
@@ -379,6 +381,60 @@ def agnes_cluster(df, k, method):
     return X, squareform(d), labels
 
 
+def pair_jaccard_score(labels_true, labels_pred):
+    """
+    Jaccard indeksas porų atžvilgiu: J = a / (a + b + c), kur
+      a – objektų poros, kurios toje pačioje klasėje ir tame pačiame klasteryje,
+      b – poros, kurios tame pačiame klasteryje, bet skirtingose klasėse,
+      c – poros, kurios toje pačioje klasėje, bet skirtinguose klasteriuose.
+    """
+    C = pair_confusion_matrix(labels_true, labels_pred)   # elementai skaičiuoja poras du kartus
+    a, b, c = C[1, 1], C[0, 1], C[1, 0]
+    return float(a / (a + b + c)) if (a + b + c) > 0 else 0.0
+
+
+def evaluate_clustering(X, labels, y_true, name='', D=None):
+    """
+    Apskaičiuoja klasterizavimo kokybės matus.
+    Vidiniai (naudoja tik duomenis ir klasterius):
+      - Silhouette (didesnis geriau, [-1, 1]),
+      - Calinski-Harabasz indeksas (didesnis geriau),
+      - Davies-Bouldin indeksas (mažesnis geriau).
+    Išoriniai (lygina klasterius su tikrosiomis klasėmis y_true):
+      - Jaccard indeksas (porų atžvilgiu), ARI, NMI (didesnis geriau).
+    X – požymių matrica (Robust Scaling erdvė), D – nebūtina Euklido atstumų matrica
+    (jei pateikta, siluetas skaičiuojamas iš jos, kad nereikėtų perskaičiuoti atstumų).
+    DBSCAN triukšmo taškai (žymė -1) į vidinius matus neįtraukiami; išoriniuose matuose
+    jie paliekami kaip atskira grupė.
+    Grąžina žodyną su matais.
+    """
+    labels = np.asarray(labels)
+    y_true = np.asarray(y_true)
+    mask = labels != -1
+    n_clusters = len(np.unique(labels[mask]))
+
+    res = {'modelis': name, 'klasteriai': n_clusters, 'triukšmas': int((~mask).sum())}
+    if n_clusters >= 2 and n_clusters < mask.sum():
+        Xm = X[mask]
+        if D is not None:
+            sil = silhouette_score(D[np.ix_(mask, mask)], labels[mask], metric='precomputed')
+        else:
+            sil = silhouette_score(Xm, labels[mask], metric='euclidean')
+        res['Silhouette'] = sil
+        res['Calinski-Harabasz'] = calinski_harabasz_score(Xm, labels[mask])
+        res['Davies-Bouldin'] = davies_bouldin_score(Xm, labels[mask])
+    else:
+        res['Silhouette'] = res['Calinski-Harabasz'] = res['Davies-Bouldin'] = np.nan
+
+    res['Jaccard'] = pair_jaccard_score(y_true, labels)
+    res['ARI'] = adjusted_rand_score(y_true, labels)
+    res['NMI'] = normalized_mutual_info_score(y_true, labels)
+
+    print(f"{name}: " + ", ".join(f"{k}={v:.4f}" if isinstance(v, float) else f"{k}={v}"
+                                  for k, v in res.items() if k != 'modelis'))
+    return res
+
+
 def plot_kmedoids_pca(df, k=4, random_state=0,
                       out_dir='exports/vizualizacija'):
     """k-medoids klasteriai PCA plokštumoje."""
@@ -421,9 +477,14 @@ def plot_agnes_tsne(df, k=3, method='single', perplexity=30, random_state=0,
 
 
 if __name__ == '__main__':
+
+    # 1
     df_out, y = prepare_dataset()
     print(f"Išsaugota exports/duomenys/A28_cleaned.csv: {df_out.shape[0]} eilučių, {df_out.shape[1]} požymių")
 
+    # 2
     find_optimal_k(df_out)
     plot_dendrogram(df_out, method='ward')
+
+    # 3
 
