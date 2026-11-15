@@ -130,7 +130,7 @@ def find_optimal_k(df, k_max=None, random_state=0, min_samples=None, dbscan_eps=
       - Elbow metodas: k-medoids kaina (atstumų iki medoidų suma),
       - vidutinio silueto metodas.
     Prieš klasterizavimą taikomas Robust Scaling.
-    Sukuriami du paveikslai: vidutinis siluetas (k = 2…k_max) ir Elbow (k = 2…k_max ir k = 2…15).
+    Sukuriami du paveikslai: vidutinis siluetas (k = 2…k_max) ir Elbow (k = 2…k_max ir k = 2…10).
     Papildomai DBSCAN:
       - eps parinkimui nubraižomas k-distance grafikas (žr. plot_k_distance),
         min_samples pagal nutylėjimą = 2 · požymių skaičius;
@@ -150,7 +150,7 @@ def find_optimal_k(df, k_max=None, random_state=0, min_samples=None, dbscan_eps=
         min_samples = 2 * X.shape[1]
 
     rows = []
-    for k in range(2, k_max + 1):
+    for k in range(2, max(k_max, 10) + 1):
         res = kmedoids.fasterpam(D, k, random_state=random_state)
         rows.append({
             'k': k,
@@ -179,15 +179,15 @@ def find_optimal_k(df, k_max=None, random_state=0, min_samples=None, dbscan_eps=
     fig.savefig(f"{out_dir}/kmedoids_siluetas.png", dpi=150)
     plt.close(fig)
 
-    # 2 paveikslas: Elbow, k = 2…k_max ir k = 2…15
+    # 2 paveikslas: Elbow, k = 2…k_max ir k = 2…10
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.2))
-    for ax, k_to in zip(axes, [k_max, 15]):
-        sub = tab[tab['k'] <= k_to]
+    for ax, (k_from, k_to) in zip(axes, [(2, k_max), (2, 10)]):
+        sub = tab[(tab['k'] >= k_from) & (tab['k'] <= k_to)]
         k_best = elbow_point(sub['k'].values, sub['cost'].values)
-        best[f'elbow (k ≤ {k_to})'] = k_best
+        best[f'elbow (k = {k_from}…{k_to})'] = k_best
         ax.plot(sub['k'], sub['cost'], 'o-', markersize=3)
         ax.axvline(k_best, color='red', linestyle='--', linewidth=1)
-        ax.set_title(f"k = 2…{k_to} (alkūnė ties k={k_best})")
+        ax.set_title(f"k = {k_from}…{k_to} (alkūnė ties k={k_best})")
         ax.set_xlabel('Klasterių skaičius k')
         ax.set_ylabel('Atstumų iki medoidų suma')
         ax.grid(alpha=0.3)
@@ -427,7 +427,3 @@ if __name__ == '__main__':
     find_optimal_k(df_out)
     plot_dendrogram(df_out, method='single')
 
-    plot_kmedoids_pca(df_out, k=3)
-    plot_agnes_pca(df_out, k=3, method='single')
-    plot_kmedoids_tsne(df_out, k=3, perplexity=30)
-    plot_agnes_tsne(df_out, k=3, method='single', perplexity=30)
