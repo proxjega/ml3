@@ -25,11 +25,12 @@ def robust_scale(df_in, cols):
     return df_out
 
 
-def prepare_dataset(csv_path='A28.csv', out_path='exports/duomenys/A28_cleaned.csv'):
+def prepare_dataset(csv_path='A28.csv', out_path='exports/duomenys/A28_cleaned.csv', outlier_k=3.0):
     """
     Paruošia išvalytą duomenų aibę:
       - pašalinami dublikatai,
       - trūkstamos reikšmės užpildomos mediana pagal klasę,
+      - ekstremalios išskirtys (už Q1 - k*IQR, Q3 + k*IQR ribų, k=3) pakeičiamos ribine reikšme,
       - pašalinami mažo kintamumo / mažo Eta2 požymiai (CV < 0.01 ir Eta2 < 0.01),
       - pašalinami stipriai koreliuoti požymiai (Spearman |rho| > 0.95),
       - pašalinamas 'class' stulpelis.
@@ -46,6 +47,15 @@ def prepare_dataset(csv_path='A28.csv', out_path='exports/duomenys/A28_cleaned.c
     df_clean = df.drop_duplicates().reset_index(drop=True)
     for col in feature_cols:
         df_clean[col] = df_clean.groupby('class')[col].transform(lambda x: x.fillna(x.median()))
+
+    # Ekstremalios išskirtys pakeičiamos artimiausia ribine reikšme (winsorizavimas)
+    q1 = df_clean[feature_cols].quantile(0.25)
+    q3 = df_clean[feature_cols].quantile(0.75)
+    iqr = q3 - q1
+    lower, upper = q1 - outlier_k * iqr, q3 + outlier_k * iqr
+    n_outliers = ((df_clean[feature_cols] < lower) | (df_clean[feature_cols] > upper)).sum()
+    df_clean[feature_cols] = df_clean[feature_cols].clip(lower=lower, upper=upper, axis=1)
+    print(f"Ekstremalios išskirtys (k={outlier_k}): pakeista {int(n_outliers.sum())} reikšmių")
 
     # 1 žingsnis: Mažo kintamumo ir mažo koreliacijos santykio šalinimas (CV < 0.01 ir Eta2 < 0.01)
     dropped_step1 = []
