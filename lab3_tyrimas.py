@@ -104,39 +104,10 @@ def prepare_dataset(csv_path='A28.csv', out_path='exports/duomenys/A28_cleaned.c
 # ==============================================================================
 # 2. OPTIMALAUS KLASTERIŲ SKAIČIAUS NUSTATYMAS (EMPYRINIS, ELBOW, SILUETAS)
 # ==============================================================================
-DISTANCES = {
-    'Minkowski p=0.5': ('minkowski', {'p': 0.5}),
-    'Manhattan (p=1)': ('cityblock', {}),
-    'Euclidean (p=2)': ('euclidean', {}),
-    'Minkowski p=3': ('minkowski', {'p': 3}),
-    'Chebyshev (p=inf)': ('chebyshev', {}),
-    'Cosine': ('cosine', {}),
-}
-
-
-def compare_distances(df, ks=(2, 3, 4, 6), random_state=0, out_dir='exports/k_parinkimas'):
-    """
-    Atstumo mato įtakos išskirtims tyrimas k-medoids algoritmu (Robust Scaling erdvėje).
-    Lentelė: eilutėse – atstumai, stulpeliuose – k, langeliuose – klasterių dydžiai
-    (mažėjimo tvarka). Mažesnis Minkovskio p mažina vieno požymio ekstremalių skirtumų įtaką;
-    p < 1 nėra tikras atstumas (negalioja trikampio nelygybė).
-    """
-    X = robust_scale(df, list(df.columns)).values
-
-    tab = pd.DataFrame(index=pd.Index(list(DISTANCES), name='Atstumas'),
-                       columns=[f'k = {k}' for k in ks])
-    for name, (metric, kw) in DISTANCES.items():
-        D = squareform(pdist(X, metric=metric, **kw))
-        for k in ks:
-            labels = kmedoids.fasterpam(D, k, random_state=random_state).labels
-            sizes = np.sort(np.bincount(labels, minlength=k))[::-1]
-            tab.loc[name, f'k = {k}'] = ', '.join(map(str, sizes))
-
-    os.makedirs(out_dir, exist_ok=True)
-    tab.to_csv(f"{out_dir}/kmedoids_atstumu_palyginimas.csv")
-    print("k-medoids klasterių dydžiai su skirtingais atstumais:")
-    print(tab.to_string())
-    return tab
+# Visur naudojamas Euklido atstumas (Robust Scaling erdvėje)
+def euclidean_matrix(X):
+    """Euklido atstumų matrica n×n."""
+    return squareform(pdist(X, metric='euclidean'))
 
 
 def elbow_point(ks, values):
@@ -151,19 +122,16 @@ def elbow_point(ks, values):
     return int(ks[np.argmax(d)])
 
 
-def find_optimal_k(df, metrics=('Cosine', 'Minkowski p=0.5'), k_max=None, random_state=0,
-                   dbscan_distance='Cosine', min_samples=None, dbscan_eps=None,
+def find_optimal_k(df, k_max=None, random_state=0, min_samples=None, dbscan_eps=None,
                    out_dir='exports/k_parinkimas'):
     """
-    Optimalaus klasterių skaičiaus paieška k-medoids algoritmu originalioje erdvėje:
+    Optimalaus klasterių skaičiaus paieška k-medoids algoritmu (Euklido atstumas):
       - empirinis metodas: k ≈ sqrt(n/2) (naudojamas kaip viršutinė k riba),
       - Elbow metodas: k-medoids kaina (atstumų iki medoidų suma),
       - vidutinio silueto metodas.
-    Skaičiuojama kiekvienam atstumui iš `metrics` (raktai iš DISTANCES).
     Prieš klasterizavimą taikomas Robust Scaling.
-    Sukuriami du paveikslai: vidutinis siluetas (k = 2…k_max) ir Elbow (eilutės – atstumai,
-    stulpeliai – k = 2…k_max ir k = 2…15).
-    Papildomai DBSCAN (atstumas dbscan_distance, nepriklauso nuo `metrics`):
+    Sukuriami du paveikslai: vidutinis siluetas (k = 2…k_max) ir Elbow (k = 2…k_max ir k = 2…15).
+    Papildomai DBSCAN:
       - eps parinkimui nubraižomas k-distance grafikas (žr. plot_k_distance),
         min_samples pagal nutylėjimą = 2 · požymių skaičius;
       - paleidžiamas DBSCAN su dbscan_eps; jei jis nenurodytas – imamas k-distance
@@ -171,6 +139,7 @@ def find_optimal_k(df, metrics=('Cosine', 'Minkowski p=0.5'), k_max=None, random
     """
     X = robust_scale(df, list(df.columns)).values
     n = len(X)
+    D = euclidean_matrix(X)
 
     k_emp = int(round(np.sqrt(n / 2)))
     print(f"Empyrinis metodas: k ≈ sqrt({n}/2) = {k_emp}")
@@ -181,58 +150,47 @@ def find_optimal_k(df, metrics=('Cosine', 'Minkowski p=0.5'), k_max=None, random
         min_samples = 2 * X.shape[1]
 
     rows = []
-    for name in metrics:
-        metric, kw = DISTANCES[name]
-        D = squareform(pdist(X, metric=metric, **kw))
-        for k in range(2, k_max + 1):
-            res = kmedoids.fasterpam(D, k, random_state=random_state)
-            rows.append({
-                'atstumas': name,
-                'k': k,
-                'cost': res.loss,
-                'silhouette': silhouette_score(D, res.labels, metric='precomputed'),
-            })
+    for k in range(2, k_max + 1):
+        res = kmedoids.fasterpam(D, k, random_state=random_state)
+        rows.append({
+            'k': k,
+            'cost': res.loss,
+            'silhouette': silhouette_score(D, res.labels, metric='precomputed'),
+        })
     tab = pd.DataFrame(rows)
 
     os.makedirs(out_dir, exist_ok=True)
     tab.to_csv(f"{out_dir}/kmedoids_k_lentele.csv", index=False)
 
-    def sub_of(name, k_to):
-        return tab[(tab['atstumas'] == name) & (tab['k'] <= k_to)]
+    best = {}
 
-    best = {name: {} for name in metrics}
-
-    # 1 paveikslas: vidutinis siluetas, k = 2…k_max (po vieną grafiką kiekvienam atstumui)
-    fig, axes = plt.subplots(1, len(metrics), figsize=(6 * len(metrics), 4.5), squeeze=False)
-    for ax, name in zip(axes[0], metrics):
-        sub = sub_of(name, k_max)
-        k_best = int(sub.loc[sub['silhouette'].idxmax(), 'k'])
-        best[name]['silhouette'] = k_best
-        ax.plot(sub['k'], sub['silhouette'], 'o-', markersize=3)
-        ax.axvline(k_best, color='red', linestyle='--', linewidth=1)
-        ax.set_title(f"{name} (geriausias k={k_best})")
-        ax.set_xlabel('Klasterių skaičius k')
-        ax.set_ylabel('Vidutinis siluetas')
-        ax.grid(alpha=0.3)
-    fig.suptitle(f"Vidutinio silueto metodas (k-medoids, k = 2…{k_max})")
+    # 1 paveikslas: vidutinis siluetas, k = 2…k_max
+    sub = tab[tab['k'] <= k_max]
+    k_best = int(sub.loc[sub['silhouette'].idxmax(), 'k'])
+    best['silhouette'] = k_best
+    fig, ax = plt.subplots(figsize=(7, 4.5))
+    ax.plot(sub['k'], sub['silhouette'], 'o-', markersize=3)
+    ax.axvline(k_best, color='red', linestyle='--', linewidth=1)
+    ax.set_title(f"Vidutinio silueto metodas (k-medoids, k = 2…{k_max}, geriausias k={k_best})")
+    ax.set_xlabel('Klasterių skaičius k')
+    ax.set_ylabel('Vidutinis siluetas')
+    ax.grid(alpha=0.3)
     fig.tight_layout()
     fig.savefig(f"{out_dir}/kmedoids_siluetas.png", dpi=150)
     plt.close(fig)
 
-    # 2 paveikslas: Elbow, eilutėse – atstumai, stulpeliuose – k = 2…k_max ir k = 2…15
-    k_ranges = [k_max, 15]
-    fig, axes = plt.subplots(len(metrics), 2, figsize=(12, 4.2 * len(metrics)), squeeze=False)
-    for row, name in zip(axes, metrics):
-        for ax, k_to in zip(row, k_ranges):
-            sub = sub_of(name, k_to)
-            k_best = elbow_point(sub['k'].values, sub['cost'].values)
-            best[name][f'elbow (k ≤ {k_to})'] = k_best
-            ax.plot(sub['k'], sub['cost'], 'o-', markersize=3)
-            ax.axvline(k_best, color='red', linestyle='--', linewidth=1)
-            ax.set_title(f"{name}, k = 2…{k_to} (alkūnė ties k={k_best})")
-            ax.set_xlabel('Klasterių skaičius k')
-            ax.set_ylabel('Atstumų iki medoidų suma')
-            ax.grid(alpha=0.3)
+    # 2 paveikslas: Elbow, k = 2…k_max ir k = 2…15
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4.2))
+    for ax, k_to in zip(axes, [k_max, 15]):
+        sub = tab[tab['k'] <= k_to]
+        k_best = elbow_point(sub['k'].values, sub['cost'].values)
+        best[f'elbow (k ≤ {k_to})'] = k_best
+        ax.plot(sub['k'], sub['cost'], 'o-', markersize=3)
+        ax.axvline(k_best, color='red', linestyle='--', linewidth=1)
+        ax.set_title(f"k = 2…{k_to} (alkūnė ties k={k_best})")
+        ax.set_xlabel('Klasterių skaičius k')
+        ax.set_ylabel('Atstumų iki medoidų suma')
+        ax.grid(alpha=0.3)
     fig.suptitle("Elbow metodas (k-medoids)")
     fig.tight_layout()
     fig.savefig(f"{out_dir}/kmedoids_elbow.png", dpi=150)
@@ -242,18 +200,16 @@ def find_optimal_k(df, metrics=('Cosine', 'Minkowski p=0.5'), k_max=None, random
     print("Geriausi k:", best)
 
     # DBSCAN: atstumas iki min_samples-ojo kaimyno (pats taškas įskaičiuojamas, kaip sklearn DBSCAN)
-    metric, kw = DISTANCES[dbscan_distance]
-    D = squareform(pdist(X, metric=metric, **kw))
     k_dist = np.sort(np.partition(D, min_samples - 1, axis=1)[:, min_samples - 1])
-    eps = plot_k_distance({dbscan_distance: k_dist}, min_samples, out_dir=out_dir)[dbscan_distance]
+    eps = plot_k_distance(k_dist, min_samples, out_dir=out_dir)
     e = dbscan_eps if dbscan_eps is not None else eps['99%']
 
     labels = DBSCAN(eps=e, min_samples=min_samples, metric='precomputed').fit_predict(D)
     n_clusters = len(set(labels) - {-1})
     n_noise = int((labels == -1).sum())
     sizes = np.sort(np.bincount(labels[labels >= 0]))[::-1] if n_clusters else []
-    best['DBSCAN'] = {'atstumas': dbscan_distance, 'eps': e, 'klasteriai': n_clusters}
-    dbscan_tab = pd.DataFrame([{'atstumas': dbscan_distance, 'eps': e, 'min_samples': min_samples,
+    best['DBSCAN'] = {'eps': e, 'klasteriai': n_clusters}
+    dbscan_tab = pd.DataFrame([{'eps': e, 'min_samples': min_samples,
                                 'klasteriai': n_clusters, 'triukšmas': n_noise,
                                 'triukšmo dalis %': round(100 * n_noise / n, 2),
                                 'klasterių dydžiai': ', '.join(map(str, sizes))}])
@@ -263,37 +219,35 @@ def find_optimal_k(df, metrics=('Cosine', 'Minkowski p=0.5'), k_max=None, random
     return tab, best
 
 
-def plot_k_distance(k_dists, min_samples, out_dir='exports/k_parinkimas'):
+def plot_k_distance(k_dist, min_samples, out_dir='exports/k_parinkimas'):
     """
     DBSCAN eps parinkimas k-distance grafiku (Elbow metodas).
-    k_dists – {atstumas: atstumų iki min_samples-ojo kaimyno masyvas, surikiuotas didėjimo tvarka}.
+    k_dist – atstumų iki min_samples-ojo kaimyno masyvas, surikiuotas didėjimo tvarka.
     eps imamas ties kreivės alkūne – labiausiai po tiese tarp pirmo ir paskutinio taško
-    nutolusiu tašku. Eilutėse – atstumai, stulpeliuose –
-    visi objektai ir 99 % objektų (be didžiausių atstumų, kurie suspaudžia kreivės pradžią).
+    nutolusiu tašku. Kairėje – visi objektai, dešinėje – 99 % objektų
+    (be didžiausių atstumų, kurie suspaudžia kreivės pradžią).
     """
     eps = {}
-    fig, axes = plt.subplots(len(k_dists), 2, figsize=(12, 4.2 * len(k_dists)), squeeze=False)
-    for row, (name, kd) in zip(axes, k_dists.items()):
-        for ax, frac in zip(row, [1.0, 0.99]):
-            y = kd[:int(np.ceil(len(kd) * frac))]
-            x = np.arange(len(y))
-            # Didėjančios kreivės alkūnė yra po tiese tarp pirmo ir paskutinio taško:
-            # normuotose koordinatėse imamas taškas, kuriam x - y didžiausias
-            xn, yn = x / x[-1], (y - y[0]) / (y[-1] - y[0])
-            i_best = int(np.argmax(xn - yn))
-            e = float(y[i_best])
-            eps.setdefault(name, {})[f'{frac:.0%}'] = e
-            ax.plot(x, y, linewidth=1.2)
-            ax.axhline(e, color='red', linestyle='--', linewidth=1)
-            ax.axvline(i_best, color='red', linestyle=':', linewidth=1)
-            log = y[-1] / np.median(y) > 20
-            if log:
-                ax.set_yscale('log')   # kelios didelės išskirtys kitaip suspaudžia visą kreivę
-            ax.set_title(f"{name}, {frac:.0%} objektų{' (log skalė)' if log else ''} "
-                         f"(alkūnė: eps≈{e:.4g})")
-            ax.set_xlabel('Objektai (surikiuoti pagal atstumą)')
-            ax.set_ylabel(f'Atstumas iki {min_samples}-ojo kaimyno')
-            ax.grid(alpha=0.3)
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4.2))
+    for ax, frac in zip(axes, [1.0, 0.99]):
+        y = k_dist[:int(np.ceil(len(k_dist) * frac))]
+        x = np.arange(len(y))
+        # Didėjančios kreivės alkūnė yra po tiese tarp pirmo ir paskutinio taško:
+        # normuotose koordinatėse imamas taškas, kuriam x - y didžiausias
+        xn, yn = x / x[-1], (y - y[0]) / (y[-1] - y[0])
+        i_best = int(np.argmax(xn - yn))
+        e = float(y[i_best])
+        eps[f'{frac:.0%}'] = e
+        ax.plot(x, y, linewidth=1.2)
+        ax.axhline(e, color='red', linestyle='--', linewidth=1)
+        ax.axvline(i_best, color='red', linestyle=':', linewidth=1)
+        log = y[-1] / np.median(y) > 20
+        if log:
+            ax.set_yscale('log')   # kelios didelės išskirtys kitaip suspaudžia visą kreivę
+        ax.set_title(f"{frac:.0%} objektų{' (log skalė)' if log else ''} (alkūnė: eps≈{e:.4g})")
+        ax.set_xlabel('Objektai (surikiuoti pagal atstumą)')
+        ax.set_ylabel(f'Atstumas iki {min_samples}-ojo kaimyno')
+        ax.grid(alpha=0.3)
     fig.suptitle(f"DBSCAN eps parinkimas: k-distance grafikas (min_samples={min_samples})")
     fig.tight_layout()
     os.makedirs(out_dir, exist_ok=True)
@@ -303,20 +257,16 @@ def plot_k_distance(k_dists, min_samples, out_dir='exports/k_parinkimas'):
     return eps
 
 
-def plot_dendrogram(df, method='single', distance='Cosine', k_max=15, p=30,
-                    out_dir='exports/k_parinkimas'):
+def plot_dendrogram(df, method='single', k_max=15, p=30, out_dir='exports/k_parinkimas'):
     """
-    AGNES (aglomeracinio hierarchinio klasterizavimo) dendrograma.
-    distance – atstumo pavadinimas iš DISTANCES (Ward jungimas galimas tik su Euklido atstumu).
+    AGNES (aglomeracinio hierarchinio klasterizavimo) dendrograma, Euklido atstumas.
     Prieš klasterizavimą taikomas Robust Scaling.
     Optimalus k parenkamas pagal didžiausią šuolį tarp paskutinių sujungimų aukščių:
     dendrograma kerpama per šio šuolio vidurį.
     Rodomi tik paskutiniai p sujungimai (truncate_mode='lastp'), nes objektų yra 4455.
     """
     X = robust_scale(df, list(df.columns)).values
-    metric, kw = DISTANCES[distance]
-    Z = linkage(pdist(X, metric=metric, **kw), method=method)
-    tag = f"{method}_{metric}" + (f"_p{kw['p']}" if 'p' in kw else '')
+    Z = linkage(pdist(X, metric='euclidean'), method=method)
 
     # Sujungimų aukščiai mažėjimo tvarka: tarp h[i-1] ir h[i] kirpimas duoda i+1 klasterių
     h = Z[::-1, 2][:k_max]
@@ -325,8 +275,7 @@ def plot_dendrogram(df, method='single', distance='Cosine', k_max=15, p=30,
     k_best = best_i + 1
     cut = (h[best_i - 1] + h[best_i]) / 2
 
-    print(f"Dendrograma ({method}, {distance}): didžiausias šuolis ties k={k_best}, "
-          f"kirpimo aukštis={cut:.4g}")
+    print(f"Dendrograma ({method}): didžiausias šuolis ties k={k_best}, kirpimo aukštis={cut:.4g}")
     print("Paskutinių sujungimų aukščiai:", np.array2string(h, precision=4))
 
     # Single jungimas sukuria labai gilų (grandininį) medį – scipy piešimui reikia didesnės rekursijos ribos
@@ -336,13 +285,13 @@ def plot_dendrogram(df, method='single', distance='Cosine', k_max=15, p=30,
                color_threshold=cut, above_threshold_color='grey')
     ax.axhline(cut, color='red', linestyle='--', linewidth=1,
                label=f"Kirpimas: k={k_best} (aukštis {cut:.4g})")
-    ax.set_title(f"AGNES dendrograma ({method} jungimas, {distance} atstumas, paskutiniai {p} sujungimai)")
+    ax.set_title(f"AGNES dendrograma ({method} jungimas, paskutiniai {p} sujungimai)")
     ax.set_xlabel("Objektai / sujungtų objektų grupės (skliaustuose – objektų skaičius)")
     ax.set_ylabel("Sujungimo atstumas")
     ax.legend()
     fig.tight_layout()
     os.makedirs(out_dir, exist_ok=True)
-    fig.savefig(f"{out_dir}/agnes_{tag}_dendrograma.png", dpi=150)
+    fig.savefig(f"{out_dir}/agnes_{method}_dendrograma.png", dpi=150)
     plt.close(fig)
     return Z, k_best
 
@@ -414,63 +363,59 @@ def plot_clusters_tsne(D, labels, title, out_path, centers=None, perplexity=30, 
     plot_clusters_2d(Z, labels, title, out_path, "t-SNE 1", "t-SNE 2", centers=centers, zoom=False)
 
 
-def kmedoids_cluster(df, k, distance, random_state=0):
-    """k-medoids originalioje (Robust Scaling) erdvėje. Grąžina X, D, rezultatą ir failo žymę."""
+def kmedoids_cluster(df, k, random_state=0):
+    """k-medoids originalioje (Robust Scaling) erdvėje, Euklido atstumas. Grąžina X, D ir rezultatą."""
     X = robust_scale(df, list(df.columns)).values
-    metric, kw = DISTANCES[distance]
-    D = squareform(pdist(X, metric=metric, **kw))
-    tag = metric + (f"_p{kw['p']}" if 'p' in kw else '')
-    return X, D, kmedoids.fasterpam(D, k, random_state=random_state), tag
+    D = euclidean_matrix(X)
+    return X, D, kmedoids.fasterpam(D, k, random_state=random_state)
 
 
-def agnes_cluster(df, k, method, distance):
-    """AGNES originalioje (Robust Scaling) erdvėje, dendrograma kerpama į k klasterių."""
+def agnes_cluster(df, k, method):
+    """AGNES originalioje (Robust Scaling) erdvėje, Euklido atstumas; dendrograma kerpama į k klasterių."""
     X = robust_scale(df, list(df.columns)).values
-    metric, kw = DISTANCES[distance]
-    d = pdist(X, metric=metric, **kw)
+    d = pdist(X, metric='euclidean')
     Z = linkage(d, method=method)
-    tag = f"{method}_{metric}" + (f"_p{kw['p']}" if 'p' in kw else '')
     labels = fcluster(Z, t=k, criterion='maxclust') - 1   # klasteriai numeruojami nuo 0
-    return X, squareform(d), labels, tag
+    return X, squareform(d), labels
 
 
-def plot_kmedoids_pca(df, k=4, distance='Euclidean (p=2)', random_state=0,
+def plot_kmedoids_pca(df, k=4, random_state=0,
                       out_dir='exports/vizualizacija'):
-    """k-medoids klasteriai PCA plokštumoje. distance – atstumo pavadinimas iš DISTANCES."""
-    X, _, res, tag = kmedoids_cluster(df, k, distance, random_state)
-    plot_clusters_pca(X, res.labels, f"k-medoids klasteriai PCA erdvėje (k={k}, {distance} atstumas)",
-                      f"{out_dir}/kmedoids_{tag}_k{k}_pca.png",
+    """k-medoids klasteriai PCA plokštumoje."""
+    X, _, res = kmedoids_cluster(df, k, random_state)
+    plot_clusters_pca(X, res.labels, f"k-medoids klasteriai PCA erdvėje (k={k})",
+                      f"{out_dir}/kmedoids_k{k}_pca.png",
                       centers=res.medoids, random_state=random_state)
     return res.labels
 
 
-def plot_kmedoids_tsne(df, k=4, distance='Euclidean (p=2)', perplexity=30, random_state=0,
+def plot_kmedoids_tsne(df, k=4, perplexity=30, random_state=0,
                        out_dir='exports/vizualizacija'):
-    """k-medoids klasteriai t-SNE plokštumoje. distance – atstumo pavadinimas iš DISTANCES."""
-    _, D, res, tag = kmedoids_cluster(df, k, distance, random_state)
+    """k-medoids klasteriai t-SNE plokštumoje."""
+    _, D, res = kmedoids_cluster(df, k, random_state)
     plot_clusters_tsne(D, res.labels,
-                       f"k-medoids klasteriai t-SNE erdvėje (k={k}, {distance} atstumas, perplexity={perplexity})",
-                       f"{out_dir}/kmedoids_{tag}_k{k}_tsne.png",
+                       f"k-medoids klasteriai t-SNE erdvėje (k={k}, perplexity={perplexity})",
+                       f"{out_dir}/kmedoids_k{k}_tsne.png",
                        centers=res.medoids, perplexity=perplexity, random_state=random_state)
     return res.labels
 
 
-def plot_agnes_pca(df, k=3, method='single', distance='Cosine', out_dir='exports/vizualizacija'):
-    """AGNES klasteriai PCA plokštumoje. distance – atstumo pavadinimas iš DISTANCES."""
-    X, _, labels, tag = agnes_cluster(df, k, method, distance)
-    plot_clusters_pca(X, labels, f"AGNES klasteriai PCA erdvėje (k={k}, {method} jungimas, {distance} atstumas)",
-                      f"{out_dir}/agnes_{tag}_k{k}_pca.png")
+def plot_agnes_pca(df, k=3, method='single', out_dir='exports/vizualizacija'):
+    """AGNES klasteriai PCA plokštumoje."""
+    X, _, labels = agnes_cluster(df, k, method)
+    plot_clusters_pca(X, labels, f"AGNES klasteriai PCA erdvėje (k={k}, {method} jungimas)",
+                      f"{out_dir}/agnes_{method}_k{k}_pca.png")
     return labels
 
 
-def plot_agnes_tsne(df, k=3, method='single', distance='Cosine', perplexity=30, random_state=0,
+def plot_agnes_tsne(df, k=3, method='single', perplexity=30, random_state=0,
                     out_dir='exports/vizualizacija'):
-    """AGNES klasteriai t-SNE plokštumoje. distance – atstumo pavadinimas iš DISTANCES."""
-    _, D, labels, tag = agnes_cluster(df, k, method, distance)
+    """AGNES klasteriai t-SNE plokštumoje."""
+    _, D, labels = agnes_cluster(df, k, method)
     plot_clusters_tsne(D, labels,
-                       f"AGNES klasteriai t-SNE erdvėje (k={k}, {method} jungimas, {distance} atstumas, "
+                       f"AGNES klasteriai t-SNE erdvėje (k={k}, {method} jungimas, "
                        f"perplexity={perplexity})",
-                       f"{out_dir}/agnes_{tag}_k{k}_tsne.png",
+                       f"{out_dir}/agnes_{method}_k{k}_tsne.png",
                        perplexity=perplexity, random_state=random_state)
     return labels
 
@@ -479,11 +424,10 @@ if __name__ == '__main__':
     df_out, y = prepare_dataset()
     print(f"Išsaugota exports/duomenys/A28_cleaned.csv: {df_out.shape[0]} eilučių, {df_out.shape[1]} požymių")
 
-    compare_distances(df_out)
-    find_optimal_k(df_out, metrics=('Euclidean (p=2)',), dbscan_distance='Cosine')
-    plot_dendrogram(df_out, method='single', distance='Cosine')
+    find_optimal_k(df_out)
+    plot_dendrogram(df_out, method='single')
 
-    plot_kmedoids_pca(df_out, k=3, distance='Cosine')
-    plot_agnes_pca(df_out, k=3, method='single', distance='Cosine')
-    plot_kmedoids_tsne(df_out, k=3, distance='Cosine', perplexity=30)
-    plot_agnes_tsne(df_out, k=3, method='single', distance='Cosine', perplexity=30)
+    plot_kmedoids_pca(df_out, k=3)
+    plot_agnes_pca(df_out, k=3, method='single')
+    plot_kmedoids_tsne(df_out, k=3, perplexity=30)
+    plot_agnes_tsne(df_out, k=3, method='single', perplexity=30)
