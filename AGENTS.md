@@ -61,6 +61,31 @@ When starting a new section, create its folder (`os.makedirs(out_dir, exist_ok=T
 instead of reusing another section's folder. Note: some section 3 plotting helpers still default to
 `exports/vizualizacija/`; output produced for a section should end up in that section's folder.
 
+## Fixed choices
+
+- **Number of clusters: k = 2.** Section 2 settled on this value; use it in all later sections unless the
+  task explicitly asks to vary k.
+- **Visualisation uses exactly two dimensionality-reduction methods:**
+  - **PCA** (2 components): `pca_embedding` / `plot_clusters_pca`
+  - **t-SNE with perplexity = 30**: `tsne_embedding` / `plot_clusters_tsne`
+
+  Every clustering result is shown with both.
+
+## Comparing parameters in one figure
+
+When researching different parameter values (distance metric, linkage method, eps, etc.), put all
+parameter variants side by side **in one figure per visualisation method** (use `plot_panels`),
+not in a separate file per variant.
+
+Example: `kmedoids_original_space` compares the Euclidean and Manhattan (`cityblock`) metrics with
+exactly 2 pictures:
+
+- `kmedoids_k2_pca.png`: Euclidean | Manhattan, both shown with PCA
+- `kmedoids_k2_tsne.png`: Euclidean | Manhattan, both shown with t-SNE
+
+The metrics for all variants go into one CSV table (e.g. `kmedoids_k2_matai.csv`). Follow this
+pattern for new parameter studies.
+
 ## Robust Scaling — always apply it
 
 `prepare_dataset()` saves and returns the cleaned data **without scaling** (`exports/duomenys/A28_cleaned.csv`
