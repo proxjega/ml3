@@ -1,6 +1,5 @@
 import os
 import sys
-
 import kmedoids
 import matplotlib.pyplot as plt
 import numpy as np
@@ -548,18 +547,35 @@ def plot_agnes_tsne(df, k=3, method='single', perplexity=30, random_state=0, out
                        perplexity=perplexity, random_state=random_state, outliers=outliers)
     return labels
 
+# ==============================================================================
+# 4. KLASTERIŲ STABILUMO EKSPERIMENTAS
+# ==============================================================================
+
+# ==============================================================================
+# 5. PARAMETRŲ ANALIZĖ IR KLASTERIZAVIMAS sumažintos dimensijos erdvėje 
+# ==============================================================================
+
+# ==============================================================================
+# 6. SKIRTINGŲ klasterizavimo algoritmų rezultatų palyginimas 
+# ==============================================================================
+
 
 if __name__ == '__main__':
 
-    # 1
+    # 1 skyrius
     df_out, y, outliers = prepare_dataset()
     print(f"Išsaugota exports/duomenys/A28_cleaned.csv: {df_out.shape[0]} eilučių, {df_out.shape[1]} požymių")
 
-    # 2
+    # 2 skyrius
     find_optimal_k(df_out)
     plot_dendrogram(df_out, method='ward')
 
+    # 3 skyrius
     kmedoids_original_space(df_out, y, k=2, outliers=outliers)
 
-    # 3
+    # 4 skyrius
+
+    # 5 skyrius
+    
+    # 6 skyrius
 
