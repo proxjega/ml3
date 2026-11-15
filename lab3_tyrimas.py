@@ -550,6 +550,81 @@ def plot_agnes_tsne(df, k=3, method='single', perplexity=30, random_state=0, out
 # ==============================================================================
 # 4. KLASTERIŲ STABILUMO EKSPERIMENTAS
 # ==============================================================================
+def fmt_mean_std(values, digits=2):
+    """Vidurkis ± st. nuokrypis lietuvišku formatu, pvz. '0,82 ± 0,06'."""
+    v = np.asarray(values, dtype=float)
+    return f"{v.mean():.{digits}f} ± {v.std(ddof=1):.{digits}f}".replace('.', ',')
+
+
+def kmedoids_stability(df, k=2, n_runs=10, frac=0.8, metric='cityblock',
+                       out_dir='exports/stabilumas'):
+    """
+    k-medoids klasterių stabilumo eksperimentas originalioje (Robust Scaling) erdvėje:
+      1. n_runs kartų atsitiktinai paimama frac (80 %) objektų (be grąžinimo),
+         random_state = 0, 1, …, n_runs−1 – rezultatai atkartojami;
+      2. kiekviena imtis klasterizuojama k-medoids su Manhattan atstumu (metric='cityblock';
+         Robust Scaling skaičiuojamas tai imčiai);
+      3. gaunami n_runs suskirstymų C1, …, CN;
+      4. lyginamos visos poros (Ci, Cj) tik pagal bendrus abiejų imčių objektus:
+         ARI, NMI ir Jaccard (porų atžvilgiu) indeksai.
+    Kiekvienai imčiai taip pat skaičiuojami vidiniai matai (Silhouette, CH, DB).
+    Išsaugoma:
+      - kmedoids_stabilumas.csv – suvestinė (vidurkis ± st. nuokrypis, minimumas),
+      - kmedoids_stabilumas_poros.csv – kiekvienos poros ARI, NMI, Jaccard,
+      - kmedoids_stabilumas_imtys.csv – kiekvienos imties vidiniai matai,
+      - kmedoids_stabilumas_boxplot.png – ARI, NMI, Jaccard sklaida.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    n = len(df)
+    m = int(round(frac * n))
+    samples = [np.sort(np.random.default_rng(seed).choice(n, size=m, replace=False))
+               for seed in range(n_runs)]
+
+    labelings, run_rows = [], []
+    for seed, idx in enumerate(samples):
+        X, D, res = kmedoids_cluster(df.iloc[idx], k, random_state=seed, metric=metric)
+        labels = np.asarray(res.labels)
+        labelings.append(pd.Series(labels, index=idx))
+        run_rows.append({'imtis': seed,
+                         'Silhouette': silhouette_score(D, labels, metric='precomputed'),
+                         'Calinski-Harabasz': calinski_harabasz_score(X, labels),
+                         'Davies-Bouldin': davies_bouldin_score(X, labels)})
+
+    pair_rows = []
+    for i in range(n_runs):
+        for j in range(i + 1, n_runs):
+            common = np.intersect1d(samples[i], samples[j])
+            li, lj = labelings[i].loc[common].values, labelings[j].loc[common].values
+            pair_rows.append({'i': i, 'j': j, 'bendri objektai': len(common),
+                              'ARI': adjusted_rand_score(li, lj),
+                              'NMI': normalized_mutual_info_score(li, lj),
+                              'Jaccard': pair_jaccard_score(li, lj)})
+
+    pairs, runs = pd.DataFrame(pair_rows), pd.DataFrame(run_rows)
+    pairs.to_csv(f"{out_dir}/kmedoids_stabilumas_poros.csv", index=False)
+    runs.to_csv(f"{out_dir}/kmedoids_stabilumas_imtys.csv", index=False)
+
+    ext, internal = ['ARI', 'NMI', 'Jaccard'], ['Silhouette', 'Calinski-Harabasz', 'Davies-Bouldin']
+    row = {'erdvė': 'Originali'}
+    row.update({c: fmt_mean_std(pairs[c]) for c in ext})
+    row.update({f"{c} min": f"{pairs[c].min():.2f}".replace('.', ',') for c in ext})
+    row.update({c: fmt_mean_std(runs[c]) for c in internal})
+    summary = pd.DataFrame([row])
+    summary.to_csv(f"{out_dir}/kmedoids_stabilumas.csv", index=False)
+
+    fig, ax = plt.subplots(figsize=(7, 5))
+    ax.boxplot([pairs[c] for c in ext], tick_labels=ext)
+    ax.set_ylabel('Reikšmė porų (Ci, Cj) bendriems objektams')
+    ax.grid(axis='y', alpha=0.3)
+    ax.set_title(f"k-medoids stabilumas originalioje erdvėje\n(k={k}, {METRIC_NAMES.get(metric, metric)} atstumas, {n_runs} imčių po "
+                 f"{int(frac * 100)} %, {len(pairs)} poros)")
+    fig.tight_layout()
+    fig.savefig(f"{out_dir}/kmedoids_stabilumas_boxplot.png", dpi=150)
+    plt.close(fig)
+
+    print(summary.to_string(index=False))
+    return summary, pairs, runs
+
 
 # ==============================================================================
 # 5. PARAMETRŲ ANALIZĖ IR KLASTERIZAVIMAS sumažintos dimensijos erdvėje 
@@ -574,6 +649,7 @@ if __name__ == '__main__':
     kmedoids_original_space(df_out, y, k=2, outliers=outliers)
 
     # 4 skyrius
+    kmedoids_stability(df_out, k=2, n_runs=10)
 
     # 5 skyrius
     
