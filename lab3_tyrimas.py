@@ -365,10 +365,14 @@ def plot_clusters_tsne(D, labels, title, out_path, centers=None, perplexity=30, 
     plot_clusters_2d(Z, labels, title, out_path, "t-SNE 1", "t-SNE 2", centers=centers, zoom=False)
 
 
-def kmedoids_cluster(df, k, random_state=0):
-    """k-medoids originalioje (Robust Scaling) erdvėje, Euklido atstumas. Grąžina X, D ir rezultatą."""
+def kmedoids_cluster(df, k, random_state=0, metric='euclidean'):
+    """
+    k-medoids originalioje (Robust Scaling) erdvėje.
+    metric – scipy pdist atstumas ('euclidean' arba 'cityblock' – Manhattan).
+    Grąžina X, D ir rezultatą.
+    """
     X = robust_scale(df, list(df.columns)).values
-    D = euclidean_matrix(X)
+    D = squareform(pdist(X, metric=metric))
     return X, D, kmedoids.fasterpam(D, k, random_state=random_state)
 
 
@@ -456,6 +460,37 @@ def plot_kmedoids_tsne(df, k=4, perplexity=30, random_state=0,
     return res.labels
 
 
+METRIC_NAMES = {'euclidean': 'Euklido', 'cityblock': 'Manhattan'}
+
+
+def kmedoids_original_space(df, y, k=2, metrics=('euclidean', 'cityblock'), perplexity=30,
+                            random_state=0, out_dir='exports/klasterizavimas_pradineje_erdveje'):
+    """
+    k-medoids klasterizavimas pradinėje (Robust Scaling) erdvėje su skirtingais atstumais.
+    Kiekvienam atstumui: apskaičiuojami vidiniai ir išoriniai matai, klasteriai pavaizduojami
+    PCA ir t-SNE plokštumose (t-SNE skaičiuojamas iš to paties atstumo matricos).
+    Matai išsaugomi {out_dir}/kmedoids_k{k}_matai.csv.
+    """
+    rows = []
+    for metric in metrics:
+        mname = METRIC_NAMES.get(metric, metric)
+        X, D, res = kmedoids_cluster(df, k, random_state, metric=metric)
+        rows.append(evaluate_clustering(X, res.labels, y, f"k-medoids (k={k}, {mname})", D=D))
+        plot_clusters_pca(X, res.labels, f"k-medoids klasteriai PCA erdvėje (k={k}, {mname} atstumas)",
+                          f"{out_dir}/kmedoids_k{k}_{metric}_pca.png",
+                          centers=res.medoids, random_state=random_state)
+        plot_clusters_tsne(D, res.labels,
+                           f"k-medoids klasteriai t-SNE erdvėje (k={k}, {mname} atstumas, "
+                           f"perplexity={perplexity})",
+                           f"{out_dir}/kmedoids_k{k}_{metric}_tsne.png",
+                           centers=res.medoids, perplexity=perplexity, random_state=random_state)
+    tab = pd.DataFrame(rows)
+    os.makedirs(out_dir, exist_ok=True)
+    tab.to_csv(f"{out_dir}/kmedoids_k{k}_matai.csv", index=False)
+    print(tab.round(4).to_string(index=False))
+    return tab
+
+
 def plot_agnes_pca(df, k=3, method='single', out_dir='exports/vizualizacija'):
     """AGNES klasteriai PCA plokštumoje."""
     X, _, labels = agnes_cluster(df, k, method)
@@ -485,6 +520,8 @@ if __name__ == '__main__':
     # 2
     find_optimal_k(df_out)
     plot_dendrogram(df_out, method='ward')
+
+    kmedoids_original_space(df_out, y, k=2)
 
     # 3
 
