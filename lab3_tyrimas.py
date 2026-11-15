@@ -37,7 +37,10 @@ def prepare_dataset(csv_path='A28.csv', out_path='exports/duomenys/A28_cleaned.c
       - pašalinami stipriai koreliuoti požymiai (Spearman |rho| > 0.95),
       - 'class' stulpelis atskiriamas nuo požymių (klasterizavime nenaudojamas, bet
         išsaugomas klasterių palyginimui su tikrosiomis klasėmis).
-    Grąžina (požymių DataFrame, klasių Series).
+    Grąžina (požymių DataFrame, klasių Series, išskirčių kaukė).
+    Išskirčių kaukė – bool Series: True, jei objekto bent viena galutinai palikto požymio
+    reikšmė buvo ekstremali išskirtis ir pakeista ribine reikšme. Ji naudojama vizualizacijose
+    išskirtims pažymėti ir išsaugoma kaip stulpelis 'isskirtis'.
     Robust scaling bus taikomas veliau (kadangi stabilumo eksperimentui bus imama 80% imties).
     """
     df = pd.read_csv(csv_path)
@@ -57,7 +60,8 @@ def prepare_dataset(csv_path='A28.csv', out_path='exports/duomenys/A28_cleaned.c
     q3 = df_clean[feature_cols].quantile(0.75)
     iqr = q3 - q1
     lower, upper = q1 - outlier_k * iqr, q3 + outlier_k * iqr
-    n_outliers = ((df_clean[feature_cols] < lower) | (df_clean[feature_cols] > upper)).sum()
+    outlier_cells = (df_clean[feature_cols] < lower) | (df_clean[feature_cols] > upper)
+    n_outliers = outlier_cells.sum()
     df_clean[feature_cols] = df_clean[feature_cols].clip(lower=lower, upper=upper, axis=1)
     print(f"Ekstremalios išskirtys (k={outlier_k}): pakeista {int(n_outliers.sum())} reikšmių")
 
@@ -98,9 +102,12 @@ def prepare_dataset(csv_path='A28.csv', out_path='exports/duomenys/A28_cleaned.c
     # bet į klasterizavimui naudojamus požymius neįtraukiamas
     df_out = df_clean[cols_A]
     y = df_clean['class']
+    # Objektai, kurių bent viena paliktų požymių reikšmė buvo pakeista (išskirtis)
+    outliers = outlier_cells[cols_A].any(axis=1).rename('isskirtis')
+    print(f"Objektų su išskirtimis (palikti požymiai): {int(outliers.sum())} iš {len(outliers)}")
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    df_clean[cols_A + ['class']].to_csv(out_path, index=False)
-    return df_out, y
+    pd.concat([df_clean[cols_A + ['class']], outliers], axis=1).to_csv(out_path, index=False)
+    return df_out, y, outliers
 
 
 # ==============================================================================
@@ -301,11 +308,14 @@ def plot_dendrogram(df, method='single', k_max=15, p=30, out_dir='exports/k_pari
 # ==============================================================================
 # 3. PARAMETRŲ ANALIZĖ IR KLASTERIZAVIMAS PRADINĖJE ERDVĖJE
 # ==============================================================================
-def plot_clusters_2d(Z, labels, title, out_path, xlabel, ylabel, centers=None, zoom=True):
+def plot_clusters_2d(Z, labels, title, out_path, xlabel, ylabel, centers=None, zoom=True,
+                     outliers=None):
     """
     Pavaizduoja klasterius dvimatėje projekcijoje Z.
     Jei zoom=True: kairėje – visi objektai, dešinėje – priartintas vaizdas (1–99 procentilių ribos).
     centers – klasterių centrų (pvz., medoidų) indeksai, jei jie yra.
+    outliers – išskirčių kaukė (iš prepare_dataset): išskirtys piešiamos klasterio spalva,
+    bet kryželiu ('x'), kiti objektai – tašku.
     """
     clusters = np.unique(labels)
     sizes = {int(c): int((labels == c).sum()) for c in clusters}
@@ -315,10 +325,18 @@ def plot_clusters_2d(Z, labels, title, out_path, xlabel, ylabel, centers=None, z
     fig, axes = plt.subplots(1, len(views), figsize=(13 if zoom else 10, 5.5 if zoom else 7),
                              squeeze=False)
     axes = axes[0]
+    out = np.asarray(outliers, dtype=bool) if outliers is not None else np.zeros(len(labels), bool)
     for ax, zoomed in zip(axes, views):
-        for c in clusters:
+        for i, c in enumerate(clusters):
+            color = f"C{i % 10}"
             m = labels == c
-            ax.scatter(Z[m, 0], Z[m, 1], s=6, alpha=0.6, label=f"Klasteris {c} (n={sizes[c]})")
+            ax.scatter(Z[m & ~out, 0], Z[m & ~out, 1], s=6, alpha=0.6, color=color,
+                       label=f"Klasteris {c} (n={sizes[c]})")
+            ax.scatter(Z[m & out, 0], Z[m & out, 1], s=14, alpha=0.8, color=color,
+                       marker='x', linewidths=0.7)
+        if out.any():
+            ax.scatter([], [], s=14, color='black', marker='x',
+                       label=f"Išskirtys (n={int(out.sum())})")
         if centers is not None:
             ax.scatter(Z[centers, 0], Z[centers, 1], marker='X', s=120,
                        c='black', edgecolors='white', label='Medoidai')
@@ -341,17 +359,18 @@ def plot_clusters_2d(Z, labels, title, out_path, xlabel, ylabel, centers=None, z
     plt.close(fig)
 
 
-def plot_clusters_pca(X, labels, title, out_path, centers=None, random_state=0):
+def plot_clusters_pca(X, labels, title, out_path, centers=None, random_state=0, outliers=None):
     """Pavaizduoja klasterius pirmųjų dviejų PCA komponenčių plokštumoje."""
     pca = PCA(n_components=2, random_state=random_state)
     Z = pca.fit_transform(X)
     evr = pca.explained_variance_ratio_ * 100
     print(f"PCA paaiškinta dispersija: PC1={evr[0]:.1f} %, PC2={evr[1]:.1f} %")
     plot_clusters_2d(Z, labels, title, out_path, f"PC1 ({evr[0]:.1f} %)", f"PC2 ({evr[1]:.1f} %)",
-                     centers=centers)
+                     centers=centers, outliers=outliers)
 
 
-def plot_clusters_tsne(D, labels, title, out_path, centers=None, perplexity=30, random_state=0):
+def plot_clusters_tsne(D, labels, title, out_path, centers=None, perplexity=30, random_state=0,
+                       outliers=None):
     """
     Pavaizduoja klasterius t-SNE plokštumoje.
     D – iš anksto apskaičiuota atstumų matrica (tas pats atstumas, kuriuo klasterizuota).
@@ -362,7 +381,8 @@ def plot_clusters_tsne(D, labels, title, out_path, centers=None, perplexity=30, 
                 random_state=random_state)
     Z = tsne.fit_transform(D)
     print(f"t-SNE (perplexity={perplexity}): KL divergencija={tsne.kl_divergence_:.4f}")
-    plot_clusters_2d(Z, labels, title, out_path, "t-SNE 1", "t-SNE 2", centers=centers, zoom=False)
+    plot_clusters_2d(Z, labels, title, out_path, "t-SNE 1", "t-SNE 2", centers=centers, zoom=False,
+                     outliers=outliers)
 
 
 def kmedoids_cluster(df, k, random_state=0, metric='euclidean'):
@@ -439,24 +459,25 @@ def evaluate_clustering(X, labels, y_true, name='', D=None):
     return res
 
 
-def plot_kmedoids_pca(df, k=4, random_state=0,
+def plot_kmedoids_pca(df, k=4, random_state=0, outliers=None,
                       out_dir='exports/vizualizacija'):
     """k-medoids klasteriai PCA plokštumoje."""
     X, _, res = kmedoids_cluster(df, k, random_state)
     plot_clusters_pca(X, res.labels, f"k-medoids klasteriai PCA erdvėje (k={k})",
                       f"{out_dir}/kmedoids_k{k}_pca.png",
-                      centers=res.medoids, random_state=random_state)
+                      centers=res.medoids, random_state=random_state, outliers=outliers)
     return res.labels
 
 
-def plot_kmedoids_tsne(df, k=4, perplexity=30, random_state=0,
+def plot_kmedoids_tsne(df, k=4, perplexity=30, random_state=0, outliers=None,
                        out_dir='exports/vizualizacija'):
     """k-medoids klasteriai t-SNE plokštumoje."""
     _, D, res = kmedoids_cluster(df, k, random_state)
     plot_clusters_tsne(D, res.labels,
                        f"k-medoids klasteriai t-SNE erdvėje (k={k}, perplexity={perplexity})",
                        f"{out_dir}/kmedoids_k{k}_tsne.png",
-                       centers=res.medoids, perplexity=perplexity, random_state=random_state)
+                       centers=res.medoids, perplexity=perplexity, random_state=random_state,
+                       outliers=outliers)
     return res.labels
 
 
@@ -464,7 +485,8 @@ METRIC_NAMES = {'euclidean': 'Euklido', 'cityblock': 'Manhattan'}
 
 
 def kmedoids_original_space(df, y, k=2, metrics=('euclidean', 'cityblock'), perplexity=30,
-                            random_state=0, out_dir='exports/klasterizavimas_pradineje_erdveje'):
+                            random_state=0, outliers=None,
+                            out_dir='exports/klasterizavimas_pradineje_erdveje'):
     """
     k-medoids klasterizavimas pradinėje (Robust Scaling) erdvėje su skirtingais atstumais.
     Kiekvienam atstumui: apskaičiuojami vidiniai ir išoriniai matai, klasteriai pavaizduojami
@@ -478,12 +500,13 @@ def kmedoids_original_space(df, y, k=2, metrics=('euclidean', 'cityblock'), perp
         rows.append(evaluate_clustering(X, res.labels, y, f"k-medoids (k={k}, {mname})", D=D))
         plot_clusters_pca(X, res.labels, f"k-medoids klasteriai PCA erdvėje (k={k}, {mname} atstumas)",
                           f"{out_dir}/kmedoids_k{k}_{metric}_pca.png",
-                          centers=res.medoids, random_state=random_state)
+                          centers=res.medoids, random_state=random_state, outliers=outliers)
         plot_clusters_tsne(D, res.labels,
                            f"k-medoids klasteriai t-SNE erdvėje (k={k}, {mname} atstumas, "
                            f"perplexity={perplexity})",
                            f"{out_dir}/kmedoids_k{k}_{metric}_tsne.png",
-                           centers=res.medoids, perplexity=perplexity, random_state=random_state)
+                           centers=res.medoids, perplexity=perplexity, random_state=random_state,
+                           outliers=outliers)
     tab = pd.DataFrame(rows)
     os.makedirs(out_dir, exist_ok=True)
     tab.to_csv(f"{out_dir}/kmedoids_k{k}_matai.csv", index=False)
@@ -491,15 +514,15 @@ def kmedoids_original_space(df, y, k=2, metrics=('euclidean', 'cityblock'), perp
     return tab
 
 
-def plot_agnes_pca(df, k=3, method='single', out_dir='exports/vizualizacija'):
+def plot_agnes_pca(df, k=3, method='single', outliers=None, out_dir='exports/vizualizacija'):
     """AGNES klasteriai PCA plokštumoje."""
     X, _, labels = agnes_cluster(df, k, method)
     plot_clusters_pca(X, labels, f"AGNES klasteriai PCA erdvėje (k={k}, {method} jungimas)",
-                      f"{out_dir}/agnes_{method}_k{k}_pca.png")
+                      f"{out_dir}/agnes_{method}_k{k}_pca.png", outliers=outliers)
     return labels
 
 
-def plot_agnes_tsne(df, k=3, method='single', perplexity=30, random_state=0,
+def plot_agnes_tsne(df, k=3, method='single', perplexity=30, random_state=0, outliers=None,
                     out_dir='exports/vizualizacija'):
     """AGNES klasteriai t-SNE plokštumoje."""
     _, D, labels = agnes_cluster(df, k, method)
@@ -507,21 +530,21 @@ def plot_agnes_tsne(df, k=3, method='single', perplexity=30, random_state=0,
                        f"AGNES klasteriai t-SNE erdvėje (k={k}, {method} jungimas, "
                        f"perplexity={perplexity})",
                        f"{out_dir}/agnes_{method}_k{k}_tsne.png",
-                       perplexity=perplexity, random_state=random_state)
+                       perplexity=perplexity, random_state=random_state, outliers=outliers)
     return labels
 
 
 if __name__ == '__main__':
 
     # 1
-    df_out, y = prepare_dataset()
+    df_out, y, outliers = prepare_dataset()
     print(f"Išsaugota exports/duomenys/A28_cleaned.csv: {df_out.shape[0]} eilučių, {df_out.shape[1]} požymių")
 
     # 2
     find_optimal_k(df_out)
     plot_dendrogram(df_out, method='ward')
 
-    kmedoids_original_space(df_out, y, k=2)
+    kmedoids_original_space(df_out, y, k=2, outliers=outliers)
 
     # 3
 
