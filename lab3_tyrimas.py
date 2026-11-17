@@ -556,7 +556,7 @@ def fmt_mean_std(values, digits=2):
     return f"{v.mean():.{digits}f} ± {v.std(ddof=1):.{digits}f}".replace('.', ',')
 
 
-def kmedoids_stability(df, k=2, n_runs=10, frac=0.8, metric='cityblock',
+def kmedoids_stability(df, k=2, n_runs=10, frac=0.8, metric='cityblock', compare=(0, 1),
                        out_dir='exports/stabilumas'):
     """
     k-medoids klasterių stabilumo eksperimentas originalioje (Robust Scaling) erdvėje:
@@ -572,7 +572,8 @@ def kmedoids_stability(df, k=2, n_runs=10, frac=0.8, metric='cityblock',
       - kmedoids_stabilumas.csv – suvestinė (vidurkis ± st. nuokrypis, minimumas),
       - kmedoids_stabilumas_poros.csv – kiekvienos poros ARI, NMI, Jaccard,
       - kmedoids_stabilumas_imtys.csv – kiekvienos imties vidiniai matai,
-      - kmedoids_stabilumas_boxplot.png – ARI, NMI, Jaccard sklaida.
+      - kmedoids_stabilumas_boxplot.png – ARI, NMI, Jaccard sklaida,
+      - kmedoids_stabilumas_imtis_{a}_vs_{b}.csv – imčių compare=(a, b) palyginimas su kitomis.
     """
     os.makedirs(out_dir, exist_ok=True)
     n = len(df)
@@ -622,8 +623,39 @@ def kmedoids_stability(df, k=2, n_runs=10, frac=0.8, metric='cityblock',
     fig.savefig(f"{out_dir}/kmedoids_stabilumas_boxplot.png", dpi=150)
     plt.close(fig)
 
+    kmedoids_stability_compare(pairs, a=compare[0], b=compare[1], n_runs=n_runs, out_dir=out_dir)
+
     print(summary.to_string(index=False))
     return summary, pairs, runs
+
+
+def kmedoids_stability_compare(pairs, a=0, b=1, n_runs=10, out_dir='exports/stabilumas'):
+    """
+    Dviejų k-medoids imčių (a ir b) sutapimas su visomis kitomis imtimis – parodo,
+    kuri imtis duoda nukrypstantį skaidinį.
+    Išsaugoma kmedoids_stabilumas_imtis_{a}_vs_{b}.csv (ARI, NMI, Jaccard, 2 skaitmenys po kablelio).
+    """
+    ext = ['ARI', 'NMI', 'Jaccard']
+
+    def pair_values(p, q):
+        if p == q:
+            return ['—'] * len(ext)
+        r = pairs[((pairs['i'] == p) & (pairs['j'] == q)) |
+                  ((pairs['i'] == q) & (pairs['j'] == p))].iloc[0]
+        return [f"{r[c]:.2f}".replace('.', ',') for c in ext]
+
+    rows = []
+    for j in range(n_runs):
+        row = {'Lyginama su imtimi': j}
+        row.update(dict(zip([f"Imtis {a}: {c}" for c in ext], pair_values(a, j))))
+        row.update(dict(zip([f"Imtis {b}: {c}" for c in ext], pair_values(b, j))))
+        rows.append(row)
+
+    tab = pd.DataFrame(rows)
+    os.makedirs(out_dir, exist_ok=True)
+    tab.to_csv(f"{out_dir}/kmedoids_stabilumas_imtis_{a}_vs_{b}.csv", index=False)
+    print(tab.to_string(index=False))
+    return tab
 
 
 # ==============================================================================
