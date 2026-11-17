@@ -724,42 +724,80 @@ def pca_reduce(df, d, random_state=0):
     return Xr, pca.explained_variance_ratio_
 
 
-def kmedoids_reduced_space(df, y, d=12, k=2, metrics=('euclidean', 'cityblock'), random_state=0,
-                           outliers=None,
+def tsne_reduce(df, d=2, perplexity=30, random_state=0):
+    """
+    Robust Scaling + t-SNE iki d dimensijų (Euklido atstumas Robust Scaling erdvėje).
+    Barnes-Hut t-SNE palaiko tik d < 4; didesnei dimensijai naudojamas tikslus (lėtas) metodas.
+    Grąžina sumažintos erdvės matricą (n x d) ir KL divergenciją.
+    """
+    X = robust_scale(df, list(df.columns)).values
+    tsne = TSNE(n_components=d, perplexity=perplexity, init='random', random_state=random_state,
+                method='barnes_hut' if d < 4 else 'exact')
+    Xr = tsne.fit_transform(X)
+    print(f"t-SNE iki d={d} (perplexity={perplexity}): KL divergencija={tsne.kl_divergence_:.4f}")
+    return Xr, float(tsne.kl_divergence_)
+
+
+REDUCTION_NAMES = {'pca': 'PCA', 'tsne': 't-SNE'}
+
+
+def kmedoids_reduced_space(df, y, d=12, k=2, method='pca', metrics=('euclidean', 'cityblock'),
+                           perplexity=30, random_state=0, outliers=None,
                            out_dir='exports/klasterizavimas_sumazintoje_erdveje'):
     """
-    k-medoids klasterizavimas sumažintos dimensijos erdvėje (Robust Scaling + PCA iki d dimensijų).
-    Kiekvienam atstumui apskaičiuojami vidiniai ir išoriniai matai (vidiniai – sumažintoje erdvėje).
-    Rezultatai vizualizuojami tik tuo metodu, kuriuo sumažinta dimensija (PCA): vienas
-    palyginimo paveikslas (po vieną grafiką kiekvienam atstumui) pirmųjų dviejų tos pačios
-    PCA komponenčių plokštumoje.
-    Matai išsaugomi {out_dir}/kmedoids_k{k}_d{d}_matai.csv.
+    k-medoids klasterizavimas sumažintos dimensijos erdvėje (Robust Scaling + PCA arba t-SNE
+    iki d dimensijų). method – 'pca' arba 'tsne' (perplexity naudojamas tik t-SNE).
+    Kiekvienam atstumui apskaičiuojami vidiniai ir išoriniai matai (vidiniai – sumažintoje erdvėje;
+    t-SNE erdvėje jie dirbtinai išauga, todėl su kitomis erdvėmis jų nelyginti).
+    Rezultatai vizualizuojami tik tuo metodu, kuriuo sumažinta dimensija: vienas palyginimo
+    paveikslas (po vieną grafiką kiekvienam atstumui):
+      - PCA – pirmųjų dviejų tos pačios PCA komponenčių plokštumoje (PC1/PC2),
+      - t-SNE – kai d = 2, pats sumažintas žemėlapis; kai d > 2, klasteriai nuspalvinami
+        2D t-SNE žemėlapyje iš tų pačių paruoštų duomenų (t-SNE ašys neturi eiliškumo,
+        todėl pirmosios dvi d-matės erdvės ašys nieko neparodytų).
+    Rezultatai išsaugomi {out_dir}/kmedoids_k{k}_{method}_d{d}.png ir ..._matai.csv.
     """
-    Xr, evr = pca_reduce(df, d, random_state)
-    var = float(evr.sum())
-    print(f"PCA iki d={d}: paaiškinta dispersija {var * 100:.1f} %")
+    mname_red = REDUCTION_NAMES[method]
+    if method == 'pca':
+        Xr, evr = pca_reduce(df, d, random_state)
+        var = float(evr.sum())
+        print(f"PCA iki d={d}: paaiškinta dispersija {var * 100:.1f} %")
+        # pirmosios dvi komponentės (tos pačios kaip originalios erdvės PCA)
+        Z = Xr[:, :2]
+        xl, yl = f"PC1 ({evr[0] * 100:.1f} %)", f"PC2 ({evr[1] * 100:.1f} %)"
+        extra = {'paaiškinta dispersija, %': round(var * 100, 2)}
+        subtitle = f"k={k}, PCA d={d}, {var * 100:.1f} % dispersijos"
+    elif method == 'tsne':
+        Xr, kl = tsne_reduce(df, d, perplexity, random_state)
+        # t-SNE ašys neturi eiliškumo, todėl kai d > 2, klasteriai rodomi 2D t-SNE žemėlapyje,
+        # apskaičiuotame iš tų pačių paruoštų duomenų (tas pats žemėlapis kaip d = 2 variante)
+        Z = Xr if d == 2 else tsne_reduce(df, 2, perplexity, random_state)[0]
+        xl, yl = 't-SNE 1', 't-SNE 2'
+        extra = {'perplexity': perplexity, 'KL divergencija': round(kl, 4)}
+        subtitle = f"k={k}, t-SNE d={d}, perplexity={perplexity}"
+        if d != 2:
+            subtitle += ", rodoma 2D t-SNE žemėlapyje"
+    else:
+        raise ValueError(f"Nežinomas dimensijos mažinimo metodas: {method}")
 
-    rows, pca_panels = [], []
-    # PCA vizualizacijai – pirmosios dvi komponentės (tos pačios kaip originalios erdvės PCA)
-    Z_pca = Xr[:, :2]
-    xl, yl = f"PC1 ({evr[0] * 100:.1f} %)", f"PC2 ({evr[1] * 100:.1f} %)"
+    rows, panels = [], []
     for metric in metrics:
         mname = METRIC_NAMES.get(metric, metric)
         D = squareform(pdist(Xr, metric=metric))
         res = kmedoids.fasterpam(D, k, random_state=random_state)
-        row = evaluate_clustering(Xr, res.labels, y, f"k-medoids (k={k}, d={d}, {mname})", D=D)
-        rows.append({'d': d, 'paaiškinta dispersija, %': round(var * 100, 2), **row})
-        common = dict(labels=res.labels, title=f"{mname} atstumas", centers=res.medoids,
-                      outliers=outliers)
-        pca_panels.append(dict(Z=Z_pca, xlabel=xl, ylabel=yl, **common))
+        row = evaluate_clustering(Xr, res.labels, y,
+                                  f"k-medoids (k={k}, {mname_red} d={d}, {mname})", D=D)
+        rows.append({'mažinimas': mname_red, 'd': d, **extra, **row})
+        panels.append(dict(Z=Z, labels=res.labels, title=f"{mname} atstumas", xlabel=xl, ylabel=yl,
+                           centers=res.medoids, outliers=outliers))
 
-    subtitle = f"k={k}, PCA d={d}, {var * 100:.1f} % dispersijos"
-    plot_panels(pca_panels, f"k-medoids klasteriai sumažintoje erdvėje, PCA vizualizacija ({subtitle})",
-                f"{out_dir}/kmedoids_k{k}_d{d}_pca.png")
+    name = f"kmedoids_k{k}_{method}_d{d}"
+    plot_panels(panels, f"k-medoids klasteriai sumažintoje erdvėje, {mname_red} vizualizacija "
+                        f"({subtitle})", f"{out_dir}/{name}.png")
 
     tab = pd.DataFrame(rows)
     os.makedirs(out_dir, exist_ok=True)
-    tab.to_csv(f"{out_dir}/kmedoids_k{k}_d{d}_matai.csv", index=False)
+    tab.to_csv(f"{out_dir}/{name}_matai.csv", index=False)
     print(tab.round(4).to_string(index=False))
     return tab
 
@@ -788,8 +826,10 @@ if __name__ == '__main__':
     # 5 skyrius
     pca_dims = pca_dimension_analysis(df_out)
     
-    kmedoids_reduced_space(df_out, y, d=12, k=2, outliers=outliers)
-    kmedoids_reduced_space(df_out, y, d=2, k=2, outliers=outliers)
+    kmedoids_reduced_space(df_out, y, d=12, k=2, method='pca', outliers=outliers)
+    kmedoids_reduced_space(df_out, y, d=2, k=2, method='pca', outliers=outliers)
+    kmedoids_reduced_space(df_out, y, d=12, k=2, method='tsne', perplexity=30, outliers=outliers)
+    kmedoids_reduced_space(df_out, y, d=2, k=2, method='tsne', perplexity=30, outliers=outliers)
 
     # 6 skyrius
 

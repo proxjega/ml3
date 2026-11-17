@@ -75,9 +75,13 @@ instead of reusing another section's folder. Note: some section 3 plotting helpe
   - **Reduced space** (section 5 and the reduced-space side of 6): show the result **only with the
     method that was used to reduce the dimension**, in that method's own projection:
     - reduced with PCA → plot the first two components of that same PCA (no t-SNE figure);
-    - reduced with t-SNE → plot the t-SNE map itself (no PCA figure).
+    - reduced with t-SNE to d = 2 → plot the t-SNE map itself (no PCA figure);
+    - reduced with t-SNE to d > 2 → colour the clusters on the 2D t-SNE map (perplexity = 30)
+      computed from the same prepared (Robust Scaled) data, i.e. the same map as the d = 2 variant.
+      t-SNE axes have no order, so never plot "the first two axes" of a higher-dimensional t-SNE.
 
-    Do not apply a second reduction method to already reduced data (e.g. PCA of a t-SNE map).
+    Do not apply a second reduction method to already reduced data (e.g. PCA of a t-SNE map,
+    or t-SNE of a 12D t-SNE space).
 
 ## Comparing parameters in one figure
 
