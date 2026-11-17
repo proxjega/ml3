@@ -608,7 +608,7 @@ def fmt_mean_std(values, digits=2):
 
 def cluster_stability(df, algorithm='kmedoids', k=2, n_runs=10, frac=0.8,
                       metric='cityblock', method='ward', eps=None, min_samples=None,
-                      out_dir='exports/stabilumas'):
+                      compare=(0, 1), out_dir='exports/stabilumas'):
     """Klasterių stabilumo eksperimentas originalioje erdvėje (80 % imtys)."""
     os.makedirs(out_dir, exist_ok=True)
     n = len(df)
@@ -690,22 +690,54 @@ def cluster_stability(df, algorithm='kmedoids', k=2, n_runs=10, frac=0.8,
     fig.savefig(f"{out_dir}/{algorithm}_stabilumas_boxplot.png", dpi=150)
     plt.close(fig)
 
-    kmedoids_stability_compare(pairs, a=compare[0], b=compare[1], n_runs=n_runs, out_dir=out_dir)
+    if compare is not None:
+        stability_compare(pairs, a=compare[0], b=compare[1], n_runs=n_runs,
+                          algorithm=algorithm, out_dir=out_dir)
 
     print(summary.to_string(index=False))
     return summary, pairs, runs
 
 
-def kmedoids_stability(df, k=2, n_runs=10, frac=0.8, metric='cityblock',
+def stability_compare(pairs, a=0, b=1, n_runs=10, algorithm='kmedoids',
+                      out_dir='exports/stabilumas'):
+    """
+    Dviejų imčių (a ir b) sutapimas su visomis kitomis imtimis – parodo,
+    kuri imtis duoda nukrypstantį skaidinį.
+    Išsaugoma {algorithm}_stabilumas_imtis_{a}_vs_{b}.csv (ARI, NMI, Jaccard, 2 skaitmenys po kablelio).
+    """
+    ext = ['ARI', 'NMI', 'Jaccard']
+
+    def pair_values(p, q):
+        if p == q:
+            return ['—'] * len(ext)
+        r = pairs[((pairs['i'] == p) & (pairs['j'] == q)) |
+                  ((pairs['i'] == q) & (pairs['j'] == p))].iloc[0]
+        return [f"{r[c]:.2f}".replace('.', ',') for c in ext]
+
+    rows = []
+    for j in range(n_runs):
+        row = {'Lyginama su imtimi': j}
+        row.update(dict(zip([f"Imtis {a}: {c}" for c in ext], pair_values(a, j))))
+        row.update(dict(zip([f"Imtis {b}: {c}" for c in ext], pair_values(b, j))))
+        rows.append(row)
+
+    tab = pd.DataFrame(rows)
+    os.makedirs(out_dir, exist_ok=True)
+    tab.to_csv(f"{out_dir}/{algorithm}_stabilumas_imtis_{a}_vs_{b}.csv", index=False)
+    print(tab.to_string(index=False))
+    return tab
+
+
+def kmedoids_stability(df, k=2, n_runs=10, frac=0.8, metric='cityblock', compare=(0, 1),
                        out_dir='exports/stabilumas'):
     return cluster_stability(df, algorithm='kmedoids', k=k, n_runs=n_runs, frac=frac,
-                             metric=metric, out_dir=out_dir)
+                             metric=metric, compare=compare, out_dir=out_dir)
 
 
-def agnes_stability(df, k=2, n_runs=10, frac=0.8, method='ward',
+def agnes_stability(df, k=2, n_runs=10, frac=0.8, method='ward', compare=None,
                     out_dir='exports/stabilumas'):
     return cluster_stability(df, algorithm='agnes', k=k, n_runs=n_runs, frac=frac,
-                             method=method, out_dir=out_dir)
+                             method=method, compare=compare, out_dir=out_dir)
 
 
 # ==============================================================================
