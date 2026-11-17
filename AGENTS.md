@@ -69,7 +69,15 @@ instead of reusing another section's folder. Note: some section 3 plotting helpe
   - **PCA** (2 components): `pca_embedding` / `plot_clusters_pca`
   - **t-SNE with perplexity = 30**: `tsne_embedding` / `plot_clusters_tsne`
 
-  Every clustering result is shown with both.
+  Which of them to use depends on the space the clustering was done in:
+  - **Original space** (sections 3, 4 and the original-space side of 6): show every result
+    with **both** PCA and t-SNE.
+  - **Reduced space** (section 5 and the reduced-space side of 6): show the result **only with the
+    method that was used to reduce the dimension**, in that method's own projection:
+    - reduced with PCA → plot the first two components of that same PCA (no t-SNE figure);
+    - reduced with t-SNE → plot the t-SNE map itself (no PCA figure).
+
+    Do not apply a second reduction method to already reduced data (e.g. PCA of a t-SNE map).
 
 ## Comparing parameters in one figure
 

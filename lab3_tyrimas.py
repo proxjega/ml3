@@ -712,6 +712,58 @@ def pca_dimension_analysis(df, thresholds=(0.8, 0.9), random_state=0,
     return dims
 
 
+def pca_reduce(df, d, random_state=0):
+    """
+    Robust Scaling + PCA iki d dimensijų.
+    Grąžina sumažintos erdvės matricą (n x d) ir kiekvienos komponentės paaiškintą dispersiją
+    (dalimis nuo visos originalios erdvės dispersijos).
+    """
+    X = robust_scale(df, list(df.columns)).values
+    pca = PCA(n_components=d, random_state=random_state)
+    Xr = pca.fit_transform(X)
+    return Xr, pca.explained_variance_ratio_
+
+
+def kmedoids_reduced_space(df, y, d=12, k=2, metrics=('euclidean', 'cityblock'), random_state=0,
+                           outliers=None,
+                           out_dir='exports/klasterizavimas_sumazintoje_erdveje'):
+    """
+    k-medoids klasterizavimas sumažintos dimensijos erdvėje (Robust Scaling + PCA iki d dimensijų).
+    Kiekvienam atstumui apskaičiuojami vidiniai ir išoriniai matai (vidiniai – sumažintoje erdvėje).
+    Rezultatai vizualizuojami tik tuo metodu, kuriuo sumažinta dimensija (PCA): vienas
+    palyginimo paveikslas (po vieną grafiką kiekvienam atstumui) pirmųjų dviejų tos pačios
+    PCA komponenčių plokštumoje.
+    Matai išsaugomi {out_dir}/kmedoids_k{k}_d{d}_matai.csv.
+    """
+    Xr, evr = pca_reduce(df, d, random_state)
+    var = float(evr.sum())
+    print(f"PCA iki d={d}: paaiškinta dispersija {var * 100:.1f} %")
+
+    rows, pca_panels = [], []
+    # PCA vizualizacijai – pirmosios dvi komponentės (tos pačios kaip originalios erdvės PCA)
+    Z_pca = Xr[:, :2]
+    xl, yl = f"PC1 ({evr[0] * 100:.1f} %)", f"PC2 ({evr[1] * 100:.1f} %)"
+    for metric in metrics:
+        mname = METRIC_NAMES.get(metric, metric)
+        D = squareform(pdist(Xr, metric=metric))
+        res = kmedoids.fasterpam(D, k, random_state=random_state)
+        row = evaluate_clustering(Xr, res.labels, y, f"k-medoids (k={k}, d={d}, {mname})", D=D)
+        rows.append({'d': d, 'paaiškinta dispersija, %': round(var * 100, 2), **row})
+        common = dict(labels=res.labels, title=f"{mname} atstumas", centers=res.medoids,
+                      outliers=outliers)
+        pca_panels.append(dict(Z=Z_pca, xlabel=xl, ylabel=yl, **common))
+
+    subtitle = f"k={k}, PCA d={d}, {var * 100:.1f} % dispersijos"
+    plot_panels(pca_panels, f"k-medoids klasteriai sumažintoje erdvėje, PCA vizualizacija ({subtitle})",
+                f"{out_dir}/kmedoids_k{k}_d{d}_pca.png")
+
+    tab = pd.DataFrame(rows)
+    os.makedirs(out_dir, exist_ok=True)
+    tab.to_csv(f"{out_dir}/kmedoids_k{k}_d{d}_matai.csv", index=False)
+    print(tab.round(4).to_string(index=False))
+    return tab
+
+
 # ==============================================================================
 # 6. SKIRTINGŲ klasterizavimo algoritmų rezultatų palyginimas 
 # ==============================================================================
@@ -735,6 +787,9 @@ if __name__ == '__main__':
 
     # 5 skyrius
     pca_dims = pca_dimension_analysis(df_out)
+    
+    kmedoids_reduced_space(df_out, y, d=12, k=2, outliers=outliers)
+    kmedoids_reduced_space(df_out, y, d=2, k=2, outliers=outliers)
 
     # 6 skyrius
 
