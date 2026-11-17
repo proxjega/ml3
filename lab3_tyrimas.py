@@ -563,34 +563,53 @@ def kmedoids_original_space(df, y, k=2, metrics=('euclidean', 'cityblock'), perp
     return tab
 
 
+def agnes_original_space(df, y, k=2, methods=('single', 'complete', 'average', 'ward'),
+                         perplexity=30, random_state=0, outliers=None,
+                         out_dir='exports/klasterizavimas_pradineje_erdveje'):
+    """AGNES klasterizavimas pradinėje erdvėje su skirtingais jungimo būdais."""
+    X = robust_scale(df, list(df.columns)).values
+    d = pdist(X, metric='euclidean')
+    D = squareform(d)
+    Z_pca, xl, yl = pca_embedding(X, random_state)
+    Z_tsne = tsne_embedding(D, perplexity, random_state)
+
+    rows, pca_panels, tsne_panels = [], [], []
+    for method in methods:
+        Z_link = linkage(d, method=method)
+        labels = fcluster(Z_link, t=k, criterion='maxclust') - 1
+        rows.append(evaluate_clustering(X, labels, y, f"AGNES (k={k}, {method})", D=D))
+        common = dict(labels=labels, title=f"{method} jungimas", outliers=outliers)
+        pca_panels.append(dict(Z=Z_pca, xlabel=xl, ylabel=yl, **common))
+        tsne_panels.append(dict(Z=Z_tsne, xlabel='t-SNE 1', ylabel='t-SNE 2', **common))
+
+    plot_panels(pca_panels, f"AGNES klasteriai PCA erdvėje (k={k})",
+                f"{out_dir}/agnes_k{k}_pca.png")
+    plot_panels(tsne_panels, f"AGNES klasteriai t-SNE erdvėje (k={k}, perplexity={perplexity})",
+                f"{out_dir}/agnes_k{k}_tsne.png")
+
+    tab = pd.DataFrame(rows)
+    os.makedirs(out_dir, exist_ok=True)
+    tab.to_csv(f"{out_dir}/agnes_k{k}_matai.csv", index=False)
+    print(tab.round(4).to_string(index=False))
+    return tab
+
+
 # ==============================================================================
 # 4. KLASTERIŲ STABILUMO EKSPERIMENTAS
 # ==============================================================================
 def fmt_mean_std(values, digits=2):
     """Vidurkis ± st. nuokrypis lietuvišku formatu, pvz. '0,82 ± 0,06'."""
     v = np.asarray(values, dtype=float)
+    v = v[~np.isnan(v)]
+    if len(v) == 0:
+        return "—"
     return f"{v.mean():.{digits}f} ± {v.std(ddof=1):.{digits}f}".replace('.', ',')
 
 
-def kmedoids_stability(df, k=2, n_runs=10, frac=0.8, metric='cityblock', compare=(0, 1),
-                       out_dir='exports/stabilumas'):
-    """
-    k-medoids klasterių stabilumo eksperimentas originalioje (Robust Scaling) erdvėje:
-      1. n_runs kartų atsitiktinai paimama frac (80 %) objektų (be grąžinimo),
-         random_state = 0, 1, …, n_runs−1 – rezultatai atkartojami;
-      2. kiekviena imtis klasterizuojama k-medoids su Manhattan atstumu (metric='cityblock';
-         Robust Scaling skaičiuojamas tai imčiai);
-      3. gaunami n_runs suskirstymų C1, …, CN;
-      4. lyginamos visos poros (Ci, Cj) tik pagal bendrus abiejų imčių objektus:
-         ARI, NMI ir Jaccard (porų atžvilgiu) indeksai.
-    Kiekvienai imčiai taip pat skaičiuojami vidiniai matai (Silhouette, CH, DB).
-    Išsaugoma:
-      - kmedoids_stabilumas.csv – suvestinė (vidurkis ± st. nuokrypis, minimumas),
-      - kmedoids_stabilumas_poros.csv – kiekvienos poros ARI, NMI, Jaccard,
-      - kmedoids_stabilumas_imtys.csv – kiekvienos imties vidiniai matai,
-      - kmedoids_stabilumas_boxplot.png – ARI, NMI, Jaccard sklaida,
-      - kmedoids_stabilumas_imtis_{a}_vs_{b}.csv – imčių compare=(a, b) palyginimas su kitomis.
-    """
+def cluster_stability(df, algorithm='kmedoids', k=2, n_runs=10, frac=0.8,
+                      metric='cityblock', method='ward', eps=None, min_samples=None,
+                      out_dir='exports/stabilumas'):
+    """Klasterių stabilumo eksperimentas originalioje erdvėje (80 % imtys)."""
     os.makedirs(out_dir, exist_ok=True)
     n = len(df)
     m = int(round(frac * n))
@@ -599,13 +618,46 @@ def kmedoids_stability(df, k=2, n_runs=10, frac=0.8, metric='cityblock', compare
 
     labelings, run_rows = [], []
     for seed, idx in enumerate(samples):
-        X, D, res = kmedoids_cluster(df.iloc[idx], k, random_state=seed, metric=metric)
-        labels = np.asarray(res.labels)
+        df_sub = df.iloc[idx]
+        if algorithm == 'kmedoids':
+            X, D, res = kmedoids_cluster(df_sub, k, random_state=seed, metric=metric)
+            labels = np.asarray(res.labels)
+            alg_title = f"k-medoids stabilumas originalioje erdvėje\n(k={k}, {METRIC_NAMES.get(metric, metric)} atstumas"
+        elif algorithm == 'agnes':
+            X, D, labels = agnes_cluster(df_sub, k, method=method)
+            labels = np.asarray(labels)
+            alg_title = f"AGNES stabilumas originalioje erdvėje\n(k={k}, {method} jungimas"
+        elif algorithm == 'dbscan':
+            X = robust_scale(df_sub, list(df_sub.columns)).values
+            D = euclidean_matrix(X)
+            ms = min_samples if min_samples is not None else 2 * X.shape[1]
+            if eps is None:
+                k_dist = np.sort(np.partition(D, ms - 1, axis=1)[:, ms - 1])
+                y_kd = k_dist[:int(np.ceil(len(k_dist) * 0.99))]
+                xn = np.arange(len(y_kd)) / (len(y_kd) - 1)
+                yn = (y_kd - y_kd[0]) / (y_kd[-1] - y_kd[0])
+                e = float(y_kd[int(np.argmax(xn - yn))])
+            else:
+                e = eps
+            labels = DBSCAN(eps=e, min_samples=ms, metric='precomputed').fit_predict(D)
+            alg_title = f"DBSCAN stabilumas originalioje erdvėje\n(min_samples={ms}"
+        else:
+            raise ValueError(f"Nežinomas algoritmas: {algorithm}")
+
         labelings.append(pd.Series(labels, index=idx))
-        run_rows.append({'imtis': seed,
-                         'Silhouette': silhouette_score(D, labels, metric='precomputed'),
-                         'Calinski-Harabasz': calinski_harabasz_score(X, labels),
-                         'Davies-Bouldin': davies_bouldin_score(X, labels)})
+        mask = labels != -1
+        n_cl = len(np.unique(labels[mask]))
+        if n_cl >= 2 and n_cl < mask.sum():
+            D_sub = D if mask.all() else D[np.ix_(mask, mask)]
+            X_sub = X if mask.all() else X[mask]
+            sil = silhouette_score(D_sub, labels[mask], metric='precomputed')
+            ch = calinski_harabasz_score(X_sub, labels[mask])
+            db = davies_bouldin_score(X_sub, labels[mask])
+        else:
+            sil = ch = db = np.nan
+
+        run_rows.append({'imtis': seed, 'Silhouette': sil,
+                         'Calinski-Harabasz': ch, 'Davies-Bouldin': db})
 
     pair_rows = []
     for i in range(n_runs):
@@ -618,8 +670,8 @@ def kmedoids_stability(df, k=2, n_runs=10, frac=0.8, metric='cityblock', compare
                               'Jaccard': pair_jaccard_score(li, lj)})
 
     pairs, runs = pd.DataFrame(pair_rows), pd.DataFrame(run_rows)
-    pairs.to_csv(f"{out_dir}/kmedoids_stabilumas_poros.csv", index=False)
-    runs.to_csv(f"{out_dir}/kmedoids_stabilumas_imtys.csv", index=False)
+    pairs.to_csv(f"{out_dir}/{algorithm}_stabilumas_poros.csv", index=False)
+    runs.to_csv(f"{out_dir}/{algorithm}_stabilumas_imtys.csv", index=False)
 
     ext, internal = ['ARI', 'NMI', 'Jaccard'], ['Silhouette', 'Calinski-Harabasz', 'Davies-Bouldin']
     row = {'erdvė': 'Originali'}
@@ -627,16 +679,15 @@ def kmedoids_stability(df, k=2, n_runs=10, frac=0.8, metric='cityblock', compare
     row.update({f"{c} min": f"{pairs[c].min():.2f}".replace('.', ',') for c in ext})
     row.update({c: fmt_mean_std(runs[c]) for c in internal})
     summary = pd.DataFrame([row])
-    summary.to_csv(f"{out_dir}/kmedoids_stabilumas.csv", index=False)
+    summary.to_csv(f"{out_dir}/{algorithm}_stabilumas.csv", index=False)
 
     fig, ax = plt.subplots(figsize=(7, 5))
     ax.boxplot([pairs[c] for c in ext], tick_labels=ext)
     ax.set_ylabel('Reikšmė porų (Ci, Cj) bendriems objektams')
     ax.grid(axis='y', alpha=0.3)
-    ax.set_title(f"k-medoids stabilumas originalioje erdvėje\n(k={k}, {METRIC_NAMES.get(metric, metric)} atstumas, {n_runs} imčių po "
-                 f"{int(frac * 100)} %, {len(pairs)} poros)")
+    ax.set_title(f"{alg_title}, {n_runs} imčių po {int(frac * 100)} %, {len(pairs)} poros)")
     fig.tight_layout()
-    fig.savefig(f"{out_dir}/kmedoids_stabilumas_boxplot.png", dpi=150)
+    fig.savefig(f"{out_dir}/{algorithm}_stabilumas_boxplot.png", dpi=150)
     plt.close(fig)
 
     kmedoids_stability_compare(pairs, a=compare[0], b=compare[1], n_runs=n_runs, out_dir=out_dir)
@@ -645,33 +696,16 @@ def kmedoids_stability(df, k=2, n_runs=10, frac=0.8, metric='cityblock', compare
     return summary, pairs, runs
 
 
-def kmedoids_stability_compare(pairs, a=0, b=1, n_runs=10, out_dir='exports/stabilumas'):
-    """
-    Dviejų k-medoids imčių (a ir b) sutapimas su visomis kitomis imtimis – parodo,
-    kuri imtis duoda nukrypstantį skaidinį.
-    Išsaugoma kmedoids_stabilumas_imtis_{a}_vs_{b}.csv (ARI, NMI, Jaccard, 2 skaitmenys po kablelio).
-    """
-    ext = ['ARI', 'NMI', 'Jaccard']
+def kmedoids_stability(df, k=2, n_runs=10, frac=0.8, metric='cityblock',
+                       out_dir='exports/stabilumas'):
+    return cluster_stability(df, algorithm='kmedoids', k=k, n_runs=n_runs, frac=frac,
+                             metric=metric, out_dir=out_dir)
 
-    def pair_values(p, q):
-        if p == q:
-            return ['—'] * len(ext)
-        r = pairs[((pairs['i'] == p) & (pairs['j'] == q)) |
-                  ((pairs['i'] == q) & (pairs['j'] == p))].iloc[0]
-        return [f"{r[c]:.2f}".replace('.', ',') for c in ext]
 
-    rows = []
-    for j in range(n_runs):
-        row = {'Lyginama su imtimi': j}
-        row.update(dict(zip([f"Imtis {a}: {c}" for c in ext], pair_values(a, j))))
-        row.update(dict(zip([f"Imtis {b}: {c}" for c in ext], pair_values(b, j))))
-        rows.append(row)
-
-    tab = pd.DataFrame(rows)
-    os.makedirs(out_dir, exist_ok=True)
-    tab.to_csv(f"{out_dir}/kmedoids_stabilumas_imtis_{a}_vs_{b}.csv", index=False)
-    print(tab.to_string(index=False))
-    return tab
+def agnes_stability(df, k=2, n_runs=10, frac=0.8, method='ward',
+                    out_dir='exports/stabilumas'):
+    return cluster_stability(df, algorithm='agnes', k=k, n_runs=n_runs, frac=frac,
+                             method=method, out_dir=out_dir)
 
 
 # ==============================================================================
@@ -900,9 +934,11 @@ if __name__ == '__main__':
 
     # 3 skyrius
     kmedoids_original_space(df_out, y, k=2, outliers=outliers)
+    agnes_original_space(df_out, y, k=2, outliers=outliers)
 
     # 4 skyrius
     kmedoids_stability(df_out, k=2, n_runs=10)
+    agnes_stability(df_out, k=2, n_runs=10, method='ward')
 
     # 5 skyrius
     pca_dims = pca_dimension_analysis(df_out)
