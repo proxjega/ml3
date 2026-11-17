@@ -510,6 +510,16 @@ def evaluate_clustering(X, labels, y_true, name='', D=None):
 METRIC_NAMES = {'euclidean': 'Euklido', 'cityblock': 'Manhattan'}
 
 
+def metric_table_row(metric_name, res, extra=None):
+    """
+    k-medoids matų lentelės eilutė: atstumo pavadinimas, papildomi stulpeliai ir matai
+    (be modelio aprašo, klasterių ir triukšmo taškų skaičiaus).
+    """
+    skip = ('modelis', 'klasteriai', 'triukšmas')
+    return {'Atstumas': metric_name, **(extra or {}),
+            **{key: v for key, v in res.items() if key not in skip}}
+
+
 def kmedoids_original_space(df, y, k=2, metrics=('euclidean', 'cityblock'), perplexity=30,
                             random_state=0, outliers=None,
                             out_dir='exports/klasterizavimas_pradineje_erdveje'):
@@ -526,7 +536,8 @@ def kmedoids_original_space(df, y, k=2, metrics=('euclidean', 'cityblock'), perp
     for metric in metrics:
         mname = METRIC_NAMES.get(metric, metric)
         X, D, res = kmedoids_cluster(df, k, random_state, metric=metric)
-        rows.append(evaluate_clustering(X, res.labels, y, f"k-medoids (k={k}, {mname})", D=D))
+        row = evaluate_clustering(X, res.labels, y, f"k-medoids (k={k}, {mname})", D=D)
+        rows.append(metric_table_row(mname, row))
         if Z_pca is None:
             Z_pca, xl, yl = pca_embedding(X, random_state)
         common = dict(labels=res.labels, title=f"{mname} atstumas", centers=res.medoids,
@@ -771,7 +782,7 @@ def kmedoids_reduced_space(df, y, d=12, k=2, method='pca', metrics=('euclidean',
         # apskaičiuotame iš tų pačių paruoštų duomenų (tas pats žemėlapis kaip d = 2 variante)
         Z = Xr if d == 2 else tsne_reduce(df, 2, perplexity, random_state)[0]
         xl, yl = 't-SNE 1', 't-SNE 2'
-        extra = {'perplexity': perplexity, 'KL divergencija': round(kl, 4)}
+        extra = {'KL divergencija': round(kl, 4)}
         subtitle = f"k={k}, t-SNE d={d}, perplexity={perplexity}"
         if d != 2:
             subtitle += ", rodoma 2D t-SNE žemėlapyje"
@@ -785,7 +796,7 @@ def kmedoids_reduced_space(df, y, d=12, k=2, method='pca', metrics=('euclidean',
         res = kmedoids.fasterpam(D, k, random_state=random_state)
         row = evaluate_clustering(Xr, res.labels, y,
                                   f"k-medoids (k={k}, {mname_red} d={d}, {mname})", D=D)
-        rows.append({'mažinimas': mname_red, 'd': d, **extra, **row})
+        rows.append(metric_table_row(mname, row, extra))
         panels.append(dict(Z=Z, labels=res.labels, title=f"{mname} atstumas", xlabel=xl, ylabel=yl,
                            centers=res.medoids, outliers=outliers))
 
