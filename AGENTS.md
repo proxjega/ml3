@@ -58,16 +58,15 @@ to their own folder (passed as an `out_dir` / `out_path` default argument):
 | 6 | new folder for the algorithm comparison (e.g. `exports/palyginimas/`) |
 
 When starting a new section, create its folder (`os.makedirs(out_dir, exist_ok=True)`) and use it
-instead of reusing another section's folder. Note: some section 3 plotting helpers still default to
-`exports/vizualizacija/`; output produced for a section should end up in that section's folder.
+instead of reusing another section's folder.
 
 ## Fixed choices
 
 - **Number of clusters: k = 2.** Section 2 settled on this value; use it in all later sections unless the
   task explicitly asks to vary k.
 - **Visualisation uses exactly two dimensionality-reduction methods:**
-  - **PCA** (2 components): `pca_embedding` / `plot_clusters_pca`
-  - **t-SNE with perplexity = 30**: `tsne_embedding` / `plot_clusters_tsne`
+  - **PCA** (2 components): `pca_embedding` + `plot_panels`
+  - **t-SNE with perplexity = 30**: `tsne_embedding` + `plot_panels`
 
   **Every t-SNE run goes through `cached_tsne`** (never call `TSNE` directly): it uses
   `init='pca'` (for a precomputed distance matrix, the equivalent classical-MDS init from

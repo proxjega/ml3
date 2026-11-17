@@ -433,21 +433,6 @@ def tsne_embedding(D, perplexity=30, random_state=0,
     return Z
 
 
-def plot_clusters_pca(X, labels, title, out_path, centers=None, random_state=0, outliers=None):
-    """Pavaizduoja klasterius pirmųjų dviejų PCA komponenčių plokštumoje."""
-    Z, xl, yl = pca_embedding(X, random_state)
-    plot_panels([dict(Z=Z, labels=labels, title='', xlabel=xl, ylabel=yl,
-                      centers=centers, outliers=outliers)], title, out_path)
-
-
-def plot_clusters_tsne(D, labels, title, out_path, centers=None, perplexity=30, random_state=0,
-                       outliers=None):
-    """Pavaizduoja klasterius t-SNE plokštumoje."""
-    Z = tsne_embedding(D, perplexity, random_state)
-    plot_panels([dict(Z=Z, labels=labels, title='', xlabel='t-SNE 1', ylabel='t-SNE 2',
-                      centers=centers, outliers=outliers)], title, out_path)
-
-
 def kmedoids_cluster(df, k, random_state=0, metric='euclidean'):
     """
     k-medoids originalioje (Robust Scaling) erdvėje.
@@ -522,28 +507,6 @@ def evaluate_clustering(X, labels, y_true, name='', D=None):
     return res
 
 
-def plot_kmedoids_pca(df, k=4, random_state=0, outliers=None,
-                      out_dir='exports/vizualizacija'):
-    """k-medoids klasteriai PCA plokštumoje."""
-    X, _, res = kmedoids_cluster(df, k, random_state)
-    plot_clusters_pca(X, res.labels, f"k-medoids klasteriai PCA erdvėje (k={k})",
-                      f"{out_dir}/kmedoids_k{k}_pca.png",
-                      centers=res.medoids, random_state=random_state, outliers=outliers)
-    return res.labels
-
-
-def plot_kmedoids_tsne(df, k=4, perplexity=30, random_state=0, outliers=None,
-                       out_dir='exports/vizualizacija'):
-    """k-medoids klasteriai t-SNE plokštumoje."""
-    _, D, res = kmedoids_cluster(df, k, random_state)
-    plot_clusters_tsne(D, res.labels,
-                       f"k-medoids klasteriai t-SNE erdvėje (k={k}, perplexity={perplexity})",
-                       f"{out_dir}/kmedoids_k{k}_tsne.png",
-                       centers=res.medoids, perplexity=perplexity, random_state=random_state,
-                       outliers=outliers)
-    return res.labels
-
-
 METRIC_NAMES = {'euclidean': 'Euklido', 'cityblock': 'Manhattan'}
 
 
@@ -583,25 +546,6 @@ def kmedoids_original_space(df, y, k=2, metrics=('euclidean', 'cityblock'), perp
     print(tab.round(4).to_string(index=False))
     return tab
 
-
-def plot_agnes_pca(df, k=3, method='single', outliers=None, out_dir='exports/vizualizacija'):
-    """AGNES klasteriai PCA plokštumoje."""
-    X, _, labels = agnes_cluster(df, k, method)
-    plot_clusters_pca(X, labels, f"AGNES klasteriai PCA erdvėje (k={k}, {method} jungimas)",
-                      f"{out_dir}/agnes_{method}_k{k}_pca.png", outliers=outliers)
-    return labels
-
-
-def plot_agnes_tsne(df, k=3, method='single', perplexity=30, random_state=0, outliers=None,
-                    out_dir='exports/vizualizacija'):
-    """AGNES klasteriai t-SNE plokštumoje."""
-    _, D, labels = agnes_cluster(df, k, method)
-    plot_clusters_tsne(D, labels,
-                       f"AGNES klasteriai t-SNE erdvėje (k={k}, {method} jungimas, "
-                       f"perplexity={perplexity})",
-                       f"{out_dir}/agnes_{method}_k{k}_tsne.png",
-                       perplexity=perplexity, random_state=random_state, outliers=outliers)
-    return labels
 
 # ==============================================================================
 # 4. KLASTERIŲ STABILUMO EKSPERIMENTAS
