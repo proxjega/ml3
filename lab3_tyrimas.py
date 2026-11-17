@@ -659,8 +659,58 @@ def kmedoids_stability_compare(pairs, a=0, b=1, n_runs=10, out_dir='exports/stab
 
 
 # ==============================================================================
-# 5. PARAMETRŲ ANALIZĖ IR KLASTERIZAVIMAS sumažintos dimensijos erdvėje 
+# 5. PARAMETRŲ ANALIZĖ IR KLASTERIZAVIMAS sumažintos dimensijos erdvėje
 # ==============================================================================
+
+def pca_dimension_analysis(df, thresholds=(0.8, 0.9), random_state=0,
+                           out_dir='exports/klasterizavimas_sumazintoje_erdveje'):
+    """
+    Sumažintos erdvės dimensijos parinkimas pagal PCA (Robust Scaling duomenims).
+    Kriterijai: sukauptos paaiškintos dispersijos slenksčiai (pvz., 80 % ir 90 %)
+    ir Kaiserio kriterijus (tikrinė reikšmė > tikrinių reikšmių vidurkis).
+    Išsaugo lentelę su kiekvienos komponentės dispersija ir sukauptos dispersijos grafiką.
+    Grąžina žodyną {kriterijus: dimensija}.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    X = robust_scale(df, list(df.columns)).values
+    pca = PCA(random_state=random_state).fit(X)
+    eig = pca.explained_variance_
+    evr = pca.explained_variance_ratio_
+    cum = np.cumsum(evr)
+    comps = np.arange(1, len(evr) + 1)
+
+    tab = pd.DataFrame({'Komponentė': comps,
+                        'Tikrinė reikšmė': np.round(eig, 4),
+                        'Paaiškinta dispersija, %': np.round(evr * 100, 2),
+                        'Sukaupta dispersija, %': np.round(cum * 100, 2)})
+    tab.to_csv(f"{out_dir}/pca_dispersija.csv", index=False)
+
+    dims = {f"{int(t * 100)} % dispersijos": int(np.searchsorted(cum, t) + 1) for t in thresholds}
+    dims['Kaiserio kriterijus'] = int((eig > eig.mean()).sum())
+    print(f"PCA dimensijos parinkimas (iš viso {len(evr)} požymių):")
+    for name, d in dims.items():
+        print(f"  {name}: d = {d} (sukaupta dispersija {cum[d - 1] * 100:.1f} %)")
+
+    fig, ax = plt.subplots(figsize=(7, 5))
+    ax.plot(comps, cum * 100, marker='o', ms=4, color='steelblue')
+    colors = plt.cm.tab10.colors
+    for i, (name, d) in enumerate(dims.items()):
+        c = colors[(i + 1) % len(colors)]
+        ax.axvline(d, color=c, ls='--', lw=1, label=f"{name}: d = {d}")
+        ax.plot(d, cum[d - 1] * 100, 'o', color=c)
+    for t in thresholds:
+        ax.axhline(t * 100, color='gray', ls=':', lw=1)
+    ax.set_xlabel('Komponenčių skaičius')
+    ax.set_ylabel('Sukaupta dispersija, %')
+    ax.set_title('PCA: sukaupta paaiškinta dispersija')
+    ax.set_ylim(0, 102)
+    ax.legend(fontsize=8, loc='lower right')
+
+    fig.tight_layout()
+    fig.savefig(f"{out_dir}/pca_sukaupta_dispersija.png", dpi=150)
+    plt.close(fig)
+    return dims
+
 
 # ==============================================================================
 # 6. SKIRTINGŲ klasterizavimo algoritmų rezultatų palyginimas 
@@ -684,6 +734,7 @@ if __name__ == '__main__':
     kmedoids_stability(df_out, k=2, n_runs=10)
 
     # 5 skyrius
-    
+    pca_dims = pca_dimension_analysis(df_out)
+
     # 6 skyrius
 
