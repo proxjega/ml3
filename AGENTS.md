@@ -58,18 +58,36 @@ to their own folder (passed as an `out_dir` / `out_path` default argument):
 | 6 | new folder for the algorithm comparison (e.g. `exports/palyginimas/`) |
 
 When starting a new section, create its folder (`os.makedirs(out_dir, exist_ok=True)`) and use it
-instead of reusing another section's folder. Note: some section 3 plotting helpers still default to
-`exports/vizualizacija/`; output produced for a section should end up in that section's folder.
+instead of reusing another section's folder.
 
 ## Fixed choices
 
 - **Number of clusters: k = 2.** Section 2 settled on this value; use it in all later sections unless the
   task explicitly asks to vary k.
 - **Visualisation uses exactly two dimensionality-reduction methods:**
-  - **PCA** (2 components): `pca_embedding` / `plot_clusters_pca`
-  - **t-SNE with perplexity = 30**: `tsne_embedding` / `plot_clusters_tsne`
+  - **PCA** (2 components): `pca_embedding` + `plot_panels`
+  - **t-SNE with perplexity = 30**: `tsne_embedding` + `plot_panels`
 
-  Every clustering result is shown with both.
+  **Every t-SNE run goes through `cached_tsne`** (never call `TSNE` directly): it uses
+  `init='pca'` (for a precomputed distance matrix, the equivalent classical-MDS init from
+  `pca_init_from_distances`, because sklearn forbids `init='pca'` with `metric='precomputed'`) and
+  caches the result as `tsne_cache/tsne_<hash>.npz` inside the section's export folder. The hash
+  covers the input data and all t-SNE parameters, so a different subsample or parameter is
+  recomputed automatically; delete the `tsne_cache/` folder to force a full recomputation.
+
+  Which of them to use depends on the space the clustering was done in:
+  - **Original space** (sections 3, 4 and the original-space side of 6): show every result
+    with **both** PCA and t-SNE.
+  - **Reduced space** (section 5 and the reduced-space side of 6): show the result **only with the
+    method that was used to reduce the dimension**, in that method's own projection:
+    - reduced with PCA → plot the first two components of that same PCA (no t-SNE figure);
+    - reduced with t-SNE to d = 2 → plot the t-SNE map itself (no PCA figure);
+    - reduced with t-SNE to d > 2 → colour the clusters on the 2D t-SNE map (perplexity = 30)
+      computed from the same prepared (Robust Scaled) data, i.e. the same map as the d = 2 variant.
+      t-SNE axes have no order, so never plot "the first two axes" of a higher-dimensional t-SNE.
+
+    Do not apply a second reduction method to already reduced data (e.g. PCA of a t-SNE map,
+    or t-SNE of a 12D t-SNE space).
 
 ## Comparing parameters in one figure
 

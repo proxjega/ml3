@@ -1,3 +1,4 @@
+import hashlib
 import os
 import sys
 import kmedoids
@@ -5,6 +6,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from scipy.cluster.hierarchy import dendrogram, fcluster, linkage
+from scipy.linalg import eigh
 from scipy.spatial.distance import pdist, squareform
 from sklearn.cluster import DBSCAN
 from sklearn.decomposition import PCA
@@ -340,14 +342,19 @@ def draw_clusters(ax, Z, labels, title, xlabel, ylabel, centers=None, outliers=N
     ax.legend(fontsize=8, markerscale=2)
 
 
-def plot_panels(panels, suptitle, out_path):
+def plot_panels(panels, suptitle, out_path, ncols=None):
     """
-    Išsaugo vieną paveikslą su keliais klasterių grafikais vienoje eilutėje.
+    Išsaugo vieną paveikslą su keliais klasterių grafikais.
     panels – žodynų sąrašas su draw_clusters argumentais (Z, labels, title, xlabel, ylabel, ...).
+    ncols – grafikų skaičius eilutėje (pagal nutylėjimą visi vienoje eilutėje).
     """
-    fig, axes = plt.subplots(1, len(panels), figsize=(6.5 * len(panels), 6), squeeze=False)
-    for ax, p in zip(axes[0], panels):
+    ncols = ncols or len(panels)
+    nrows = -(-len(panels) // ncols)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(6.5 * ncols, 6 * nrows), squeeze=False)
+    for ax, p in zip(axes.flat, panels):
         draw_clusters(ax, **p)
+    for ax in axes.flat[len(panels):]:
+        ax.axis('off')
     fig.suptitle(suptitle)
     fig.tight_layout()
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
@@ -364,32 +371,71 @@ def pca_embedding(X, random_state=0):
     return Z, f"PC1 ({evr[0]:.1f} %)", f"PC2 ({evr[1]:.1f} %)"
 
 
-def tsne_embedding(D, perplexity=30, random_state=0):
+def pca_init_from_distances(D, n_components=2):
     """
-    t-SNE projekcija iš atstumų matricos D (tas pats atstumas, kuriuo klasterizuota).
+    PCA tipo t-SNE inicializacija iš atstumų matricos (klasikinis MDS).
+    Euklido atstumams tai sutampa su PCA projekcija; sklearn neleidžia init='pca' su
+    metric='precomputed', todėl inicializacija apskaičiuojama čia. Mastelis – kaip sklearn
+    init='pca' (pirmosios ašies st. nuokrypis 1e-4).
+    """
+    n = D.shape[0]
+    J = np.eye(n) - 1.0 / n
+    B = -0.5 * J @ (D ** 2) @ J
+    vals, vecs = eigh(B, subset_by_index=[n - n_components, n - 1])
+    order = np.argsort(vals)[::-1]
+    Y = vecs[:, order] * np.sqrt(np.maximum(vals[order], 0))
+    return (Y / np.std(Y[:, 0]) * 1e-4).astype(np.float32)
+
+
+def cached_tsne(data, cache_dir, n_components=2, perplexity=30, random_state=0, precomputed=False):
+    """
+    t-SNE su init='pca' ir rezultatų talpykla (cache).
+    data – požymių matrica (precomputed=False) arba atstumų matrica (precomputed=True).
+    Raktas – duomenų maišos (hash) reikšmė ir t-SNE parametrai, todėl pasikeitus duomenims
+    (pvz., kitai imčiai) ar parametrams t-SNE perskaičiuojamas. Rezultatas saugomas
+    {cache_dir}/tsne_<raktas>.npz ir kitą kartą tiesiog nuskaitomas.
+    Barnes-Hut t-SNE palaiko tik n_components < 4; didesnei dimensijai naudojamas tikslus
+    (lėtas) metodas.
+    Grąžina (Z, KL divergencija).
+    """
+    data = np.ascontiguousarray(data, dtype=np.float64)
+    h = hashlib.sha1(data.tobytes())
+    h.update(f"{data.shape}|{n_components}|{perplexity}|{random_state}|{precomputed}|pca".encode())
+    path = os.path.join(cache_dir, f"tsne_{h.hexdigest()[:16]}.npz")
+    if os.path.exists(path):
+        f = np.load(path)
+        print(f"t-SNE (d={n_components}, perplexity={perplexity}) nuskaitytas iš {path}: "
+              f"KL divergencija={float(f['kl']):.4f}")
+        return f['Z'], float(f['kl'])
+
+    if precomputed:
+        init = pca_init_from_distances(data, n_components)
+        tsne = TSNE(n_components=n_components, perplexity=perplexity, metric='precomputed',
+                    init=init, random_state=random_state,
+                    method='barnes_hut' if n_components < 4 else 'exact')
+    else:
+        tsne = TSNE(n_components=n_components, perplexity=perplexity, init='pca',
+                    random_state=random_state,
+                    method='barnes_hut' if n_components < 4 else 'exact')
+    Z = tsne.fit_transform(data)
+    kl = float(tsne.kl_divergence_)
+    os.makedirs(cache_dir, exist_ok=True)
+    np.savez(path, Z=Z, kl=kl)
+    print(f"t-SNE (d={n_components}, perplexity={perplexity}): KL divergencija={kl:.4f}, "
+          f"išsaugota {path}")
+    return Z, kl
+
+
+def tsne_embedding(D, perplexity=30, random_state=0,
+                   cache_dir='exports/klasterizavimas_pradineje_erdveje/tsne_cache'):
+    """
+    t-SNE projekcija iš atstumų matricos D (tas pats atstumas, kuriuo klasterizuota),
+    init – PCA tipo (klasikinis MDS iš D), rezultatas talpinamas cache_dir.
     t-SNE išlaiko vietinę kaimynystę, bet atstumai tarp klasterių ir jų dydžiai plokštumoje
     nėra interpretuojami.
     """
-    tsne = TSNE(n_components=2, perplexity=perplexity, metric='precomputed', init='random',
-                random_state=random_state)
-    Z = tsne.fit_transform(D)
-    print(f"t-SNE (perplexity={perplexity}): KL divergencija={tsne.kl_divergence_:.4f}")
+    Z, _ = cached_tsne(D, cache_dir, 2, perplexity, random_state, precomputed=True)
     return Z
-
-
-def plot_clusters_pca(X, labels, title, out_path, centers=None, random_state=0, outliers=None):
-    """Pavaizduoja klasterius pirmųjų dviejų PCA komponenčių plokštumoje."""
-    Z, xl, yl = pca_embedding(X, random_state)
-    plot_panels([dict(Z=Z, labels=labels, title='', xlabel=xl, ylabel=yl,
-                      centers=centers, outliers=outliers)], title, out_path)
-
-
-def plot_clusters_tsne(D, labels, title, out_path, centers=None, perplexity=30, random_state=0,
-                       outliers=None):
-    """Pavaizduoja klasterius t-SNE plokštumoje."""
-    Z = tsne_embedding(D, perplexity, random_state)
-    plot_panels([dict(Z=Z, labels=labels, title='', xlabel='t-SNE 1', ylabel='t-SNE 2',
-                      centers=centers, outliers=outliers)], title, out_path)
 
 
 def kmedoids_cluster(df, k, random_state=0, metric='euclidean'):
@@ -466,29 +512,17 @@ def evaluate_clustering(X, labels, y_true, name='', D=None):
     return res
 
 
-def plot_kmedoids_pca(df, k=4, random_state=0, outliers=None,
-                      out_dir='exports/vizualizacija'):
-    """k-medoids klasteriai PCA plokštumoje."""
-    X, _, res = kmedoids_cluster(df, k, random_state)
-    plot_clusters_pca(X, res.labels, f"k-medoids klasteriai PCA erdvėje (k={k})",
-                      f"{out_dir}/kmedoids_k{k}_pca.png",
-                      centers=res.medoids, random_state=random_state, outliers=outliers)
-    return res.labels
-
-
-def plot_kmedoids_tsne(df, k=4, perplexity=30, random_state=0, outliers=None,
-                       out_dir='exports/vizualizacija'):
-    """k-medoids klasteriai t-SNE plokštumoje."""
-    _, D, res = kmedoids_cluster(df, k, random_state)
-    plot_clusters_tsne(D, res.labels,
-                       f"k-medoids klasteriai t-SNE erdvėje (k={k}, perplexity={perplexity})",
-                       f"{out_dir}/kmedoids_k{k}_tsne.png",
-                       centers=res.medoids, perplexity=perplexity, random_state=random_state,
-                       outliers=outliers)
-    return res.labels
-
-
 METRIC_NAMES = {'euclidean': 'Euklido', 'cityblock': 'Manhattan'}
+
+
+def metric_table_row(metric_name, res, extra=None):
+    """
+    k-medoids matų lentelės eilutė: atstumo pavadinimas, papildomi stulpeliai ir matai
+    (be modelio aprašo, klasterių ir triukšmo taškų skaičiaus).
+    """
+    skip = ('modelis', 'klasteriai', 'triukšmas')
+    return {'Atstumas': metric_name, **(extra or {}),
+            **{key: v for key, v in res.items() if key not in skip}}
 
 
 def kmedoids_original_space(df, y, k=2, metrics=('euclidean', 'cityblock'), perplexity=30,
@@ -507,7 +541,8 @@ def kmedoids_original_space(df, y, k=2, metrics=('euclidean', 'cityblock'), perp
     for metric in metrics:
         mname = METRIC_NAMES.get(metric, metric)
         X, D, res = kmedoids_cluster(df, k, random_state, metric=metric)
-        rows.append(evaluate_clustering(X, res.labels, y, f"k-medoids (k={k}, {mname})", D=D))
+        row = evaluate_clustering(X, res.labels, y, f"k-medoids (k={k}, {mname})", D=D)
+        rows.append(metric_table_row(mname, row))
         if Z_pca is None:
             Z_pca, xl, yl = pca_embedding(X, random_state)
         common = dict(labels=res.labels, title=f"{mname} atstumas", centers=res.medoids,
@@ -527,25 +562,6 @@ def kmedoids_original_space(df, y, k=2, metrics=('euclidean', 'cityblock'), perp
     print(tab.round(4).to_string(index=False))
     return tab
 
-
-def plot_agnes_pca(df, k=3, method='single', outliers=None, out_dir='exports/vizualizacija'):
-    """AGNES klasteriai PCA plokštumoje."""
-    X, _, labels = agnes_cluster(df, k, method)
-    plot_clusters_pca(X, labels, f"AGNES klasteriai PCA erdvėje (k={k}, {method} jungimas)",
-                      f"{out_dir}/agnes_{method}_k{k}_pca.png", outliers=outliers)
-    return labels
-
-
-def plot_agnes_tsne(df, k=3, method='single', perplexity=30, random_state=0, outliers=None,
-                    out_dir='exports/vizualizacija'):
-    """AGNES klasteriai t-SNE plokštumoje."""
-    _, D, labels = agnes_cluster(df, k, method)
-    plot_clusters_tsne(D, labels,
-                       f"AGNES klasteriai t-SNE erdvėje (k={k}, {method} jungimas, "
-                       f"perplexity={perplexity})",
-                       f"{out_dir}/agnes_{method}_k{k}_tsne.png",
-                       perplexity=perplexity, random_state=random_state, outliers=outliers)
-    return labels
 
 def agnes_original_space(df, y, k=2, methods=('single', 'complete', 'average', 'ward'),
                          perplexity=30, random_state=0, outliers=None,
@@ -592,7 +608,7 @@ def fmt_mean_std(values, digits=2):
 
 def cluster_stability(df, algorithm='kmedoids', k=2, n_runs=10, frac=0.8,
                       metric='cityblock', method='ward', eps=None, min_samples=None,
-                      out_dir='exports/stabilumas'):
+                      compare=(0, 1), out_dir='exports/stabilumas'):
     """Klasterių stabilumo eksperimentas originalioje erdvėje (80 % imtys)."""
     os.makedirs(out_dir, exist_ok=True)
     n = len(df)
@@ -674,25 +690,264 @@ def cluster_stability(df, algorithm='kmedoids', k=2, n_runs=10, frac=0.8,
     fig.savefig(f"{out_dir}/{algorithm}_stabilumas_boxplot.png", dpi=150)
     plt.close(fig)
 
+    if compare is not None:
+        stability_compare(pairs, a=compare[0], b=compare[1], n_runs=n_runs,
+                          algorithm=algorithm, out_dir=out_dir)
+
     print(summary.to_string(index=False))
     return summary, pairs, runs
 
 
-def kmedoids_stability(df, k=2, n_runs=10, frac=0.8, metric='cityblock',
+def stability_compare(pairs, a=0, b=1, n_runs=10, algorithm='kmedoids',
+                      out_dir='exports/stabilumas'):
+    """
+    Dviejų imčių (a ir b) sutapimas su visomis kitomis imtimis – parodo,
+    kuri imtis duoda nukrypstantį skaidinį.
+    Išsaugoma {algorithm}_stabilumas_imtis_{a}_vs_{b}.csv (ARI, NMI, Jaccard, 2 skaitmenys po kablelio).
+    """
+    ext = ['ARI', 'NMI', 'Jaccard']
+
+    def pair_values(p, q):
+        if p == q:
+            return ['—'] * len(ext)
+        r = pairs[((pairs['i'] == p) & (pairs['j'] == q)) |
+                  ((pairs['i'] == q) & (pairs['j'] == p))].iloc[0]
+        return [f"{r[c]:.2f}".replace('.', ',') for c in ext]
+
+    rows = []
+    for j in range(n_runs):
+        row = {'Lyginama su imtimi': j}
+        row.update(dict(zip([f"Imtis {a}: {c}" for c in ext], pair_values(a, j))))
+        row.update(dict(zip([f"Imtis {b}: {c}" for c in ext], pair_values(b, j))))
+        rows.append(row)
+
+    tab = pd.DataFrame(rows)
+    os.makedirs(out_dir, exist_ok=True)
+    tab.to_csv(f"{out_dir}/{algorithm}_stabilumas_imtis_{a}_vs_{b}.csv", index=False)
+    print(tab.to_string(index=False))
+    return tab
+
+
+def kmedoids_stability(df, k=2, n_runs=10, frac=0.8, metric='cityblock', compare=(0, 1),
                        out_dir='exports/stabilumas'):
     return cluster_stability(df, algorithm='kmedoids', k=k, n_runs=n_runs, frac=frac,
-                             metric=metric, out_dir=out_dir)
+                             metric=metric, compare=compare, out_dir=out_dir)
 
 
-def agnes_stability(df, k=2, n_runs=10, frac=0.8, method='ward',
+def agnes_stability(df, k=2, n_runs=10, frac=0.8, method='ward', compare=None,
                     out_dir='exports/stabilumas'):
     return cluster_stability(df, algorithm='agnes', k=k, n_runs=n_runs, frac=frac,
-                             method=method, out_dir=out_dir)
+                             method=method, compare=compare, out_dir=out_dir)
 
 
 # ==============================================================================
-# 5. PARAMETRŲ ANALIZĖ IR KLASTERIZAVIMAS sumažintos dimensijos erdvėje 
+# 5. PARAMETRŲ ANALIZĖ IR KLASTERIZAVIMAS sumažintos dimensijos erdvėje
 # ==============================================================================
+
+def pca_dimension_analysis(df, thresholds=(0.8, 0.9), random_state=0,
+                           out_dir='exports/klasterizavimas_sumazintoje_erdveje'):
+    """
+    Sumažintos erdvės dimensijos parinkimas pagal PCA (Robust Scaling duomenims).
+    Kriterijai: sukauptos paaiškintos dispersijos slenksčiai (pvz., 80 % ir 90 %)
+    ir Kaiserio kriterijus (tikrinė reikšmė > tikrinių reikšmių vidurkis).
+    Išsaugo lentelę su kiekvienos komponentės dispersija ir sukauptos dispersijos grafiką.
+    Grąžina žodyną {kriterijus: dimensija}.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    X = robust_scale(df, list(df.columns)).values
+    pca = PCA(random_state=random_state).fit(X)
+    eig = pca.explained_variance_
+    evr = pca.explained_variance_ratio_
+    cum = np.cumsum(evr)
+    comps = np.arange(1, len(evr) + 1)
+
+    tab = pd.DataFrame({'Komponentė': comps,
+                        'Tikrinė reikšmė': np.round(eig, 4),
+                        'Paaiškinta dispersija, %': np.round(evr * 100, 2),
+                        'Sukaupta dispersija, %': np.round(cum * 100, 2)})
+    tab.to_csv(f"{out_dir}/pca_dispersija.csv", index=False)
+
+    dims = {f"{int(t * 100)} % dispersijos": int(np.searchsorted(cum, t) + 1) for t in thresholds}
+    dims['Kaiserio kriterijus'] = int((eig > eig.mean()).sum())
+    print(f"PCA dimensijos parinkimas (iš viso {len(evr)} požymių):")
+    for name, d in dims.items():
+        print(f"  {name}: d = {d} (sukaupta dispersija {cum[d - 1] * 100:.1f} %)")
+
+    fig, ax = plt.subplots(figsize=(7, 5))
+    ax.plot(comps, cum * 100, marker='o', ms=4, color='steelblue')
+    colors = plt.cm.tab10.colors
+    for i, (name, d) in enumerate(dims.items()):
+        c = colors[(i + 1) % len(colors)]
+        ax.axvline(d, color=c, ls='--', lw=1, label=f"{name}: d = {d}")
+        ax.plot(d, cum[d - 1] * 100, 'o', color=c)
+    for t in thresholds:
+        ax.axhline(t * 100, color='gray', ls=':', lw=1)
+    ax.set_xlabel('Komponenčių skaičius')
+    ax.set_ylabel('Sukaupta dispersija, %')
+    ax.set_title('PCA: sukaupta paaiškinta dispersija')
+    ax.set_ylim(0, 102)
+    ax.legend(fontsize=8, loc='lower right')
+
+    fig.tight_layout()
+    fig.savefig(f"{out_dir}/pca_sukaupta_dispersija.png", dpi=150)
+    plt.close(fig)
+    return dims
+
+
+def pca_reduce(df, d, random_state=0):
+    """
+    Robust Scaling + PCA iki d dimensijų.
+    Grąžina sumažintos erdvės matricą (n x d) ir kiekvienos komponentės paaiškintą dispersiją
+    (dalimis nuo visos originalios erdvės dispersijos).
+    """
+    X = robust_scale(df, list(df.columns)).values
+    pca = PCA(n_components=d, random_state=random_state)
+    Xr = pca.fit_transform(X)
+    return Xr, pca.explained_variance_ratio_
+
+
+def tsne_reduce(df, d=2, perplexity=30, random_state=0,
+                cache_dir='exports/klasterizavimas_sumazintoje_erdveje/tsne_cache'):
+    """
+    Robust Scaling + t-SNE (init='pca') iki d dimensijų (Euklido atstumas Robust Scaling erdvėje).
+    Rezultatas talpinamas cache_dir: tiems patiems duomenims ir parametrams t-SNE
+    skaičiuojamas tik vieną kartą.
+    Grąžina sumažintos erdvės matricą (n x d) ir KL divergenciją.
+    """
+    X = robust_scale(df, list(df.columns)).values
+    return cached_tsne(X, cache_dir, d, perplexity, random_state)
+
+
+REDUCTION_NAMES = {'pca': 'PCA', 'tsne': 't-SNE'}
+
+
+def kmedoids_reduced_space(df, y, d=12, k=2, method='pca', metrics=('euclidean', 'cityblock'),
+                           perplexity=30, random_state=0, outliers=None,
+                           out_dir='exports/klasterizavimas_sumazintoje_erdveje'):
+    """
+    k-medoids klasterizavimas sumažintos dimensijos erdvėje (Robust Scaling + PCA arba t-SNE
+    iki d dimensijų). method – 'pca' arba 'tsne' (perplexity naudojamas tik t-SNE).
+    Kiekvienam atstumui apskaičiuojami vidiniai ir išoriniai matai (vidiniai – sumažintoje erdvėje;
+    t-SNE erdvėje jie dirbtinai išauga, todėl su kitomis erdvėmis jų nelyginti).
+    Rezultatai vizualizuojami tik tuo metodu, kuriuo sumažinta dimensija: vienas palyginimo
+    paveikslas (po vieną grafiką kiekvienam atstumui):
+      - PCA – pirmųjų dviejų tos pačios PCA komponenčių plokštumoje (PC1/PC2),
+      - t-SNE – kai d = 2, pats sumažintas žemėlapis; kai d > 2, klasteriai nuspalvinami
+        2D t-SNE žemėlapyje iš tų pačių paruoštų duomenų (t-SNE ašys neturi eiliškumo,
+        todėl pirmosios dvi d-matės erdvės ašys nieko neparodytų).
+    Rezultatai išsaugomi {out_dir}/kmedoids_k{k}_{method}_d{d}.png ir ..._matai.csv.
+    """
+    mname_red = REDUCTION_NAMES[method]
+    if method == 'pca':
+        Xr, evr = pca_reduce(df, d, random_state)
+        var = float(evr.sum())
+        print(f"PCA iki d={d}: paaiškinta dispersija {var * 100:.1f} %")
+        # pirmosios dvi komponentės (tos pačios kaip originalios erdvės PCA)
+        Z = Xr[:, :2]
+        xl, yl = f"PC1 ({evr[0] * 100:.1f} %)", f"PC2 ({evr[1] * 100:.1f} %)"
+        extra = {'paaiškinta dispersija, %': round(var * 100, 2)}
+        subtitle = f"k={k}, PCA d={d}, {var * 100:.1f} % dispersijos"
+    elif method == 'tsne':
+        Xr, kl = tsne_reduce(df, d, perplexity, random_state)
+        # t-SNE ašys neturi eiliškumo, todėl kai d > 2, klasteriai rodomi 2D t-SNE žemėlapyje,
+        # apskaičiuotame iš tų pačių paruoštų duomenų (tas pats žemėlapis kaip d = 2 variante)
+        Z = Xr if d == 2 else tsne_reduce(df, 2, perplexity, random_state)[0]
+        xl, yl = 't-SNE 1', 't-SNE 2'
+        extra = {'KL divergencija': round(kl, 4)}
+        subtitle = f"k={k}, t-SNE d={d}, perplexity={perplexity}"
+        if d != 2:
+            subtitle += ", rodoma 2D t-SNE žemėlapyje"
+    else:
+        raise ValueError(f"Nežinomas dimensijos mažinimo metodas: {method}")
+
+    rows, panels = [], []
+    for metric in metrics:
+        mname = METRIC_NAMES.get(metric, metric)
+        D = squareform(pdist(Xr, metric=metric))
+        res = kmedoids.fasterpam(D, k, random_state=random_state)
+        row = evaluate_clustering(Xr, res.labels, y,
+                                  f"k-medoids (k={k}, {mname_red} d={d}, {mname})", D=D)
+        rows.append(metric_table_row(mname, row, extra))
+        panels.append(dict(Z=Z, labels=res.labels, title=f"{mname} atstumas", xlabel=xl, ylabel=yl,
+                           centers=res.medoids, outliers=outliers))
+
+    name = f"kmedoids_k{k}_{method}_d{d}"
+    plot_panels(panels, f"k-medoids klasteriai sumažintoje erdvėje, {mname_red} vizualizacija "
+                        f"({subtitle})", f"{out_dir}/{name}.png")
+
+    tab = pd.DataFrame(rows)
+    os.makedirs(out_dir, exist_ok=True)
+    tab.to_csv(f"{out_dir}/{name}_matai.csv", index=False)
+    print(tab.round(4).to_string(index=False))
+    return tab
+
+
+# k-medoids konfigūracijos palyginimui: (erdvė, dimensija, atstumas); kiekvienai erdvei
+# imamas atstumas, kuris buvo geresnis 3 ir 5 skyrių parametrų analizėje
+KMEDOIDS_COMPARISON = (('original', None, 'cityblock'),
+                       ('pca', 12, 'euclidean'),
+                       ('pca', 2, 'cityblock'),
+                       ('tsne', 12, 'euclidean'),
+                       ('tsne', 2, 'euclidean'))
+
+
+def kmedoids_comparison(df, y, k=2, configs=KMEDOIDS_COMPARISON, perplexity=30, random_state=0,
+                        outliers=None, out_dir='exports/klasterizavimas_sumazintoje_erdveje'):
+    """
+    k-medoids rezultatų palyginimas pradinėje ir sumažintose erdvėse (kiekvienai erdvei –
+    pasirinktas atstumas). Vienas paveikslas su 6 grafikais:
+      - viršutinė eilutė – PCA: pradinė erdvė (PCA projekcija), PCA d=12 (PC1/PC2), PCA d=2;
+      - apatinė eilutė – t-SNE: pradinė erdvė (t-SNE iš tos pačios atstumų matricos),
+        t-SNE d=12 (klasteriai 2D t-SNE žemėlapyje), t-SNE d=2.
+    Matai išsaugomi {out_dir}/kmedoids_k{k}_palyginimas_matai.csv (vidiniai matai skaičiuojami
+    erdvėje, kurioje klasterizuota, todėl t-SNE erdvių vidiniai matai dirbtinai didesni).
+    """
+    cache_dir = f"{out_dir}/tsne_cache"
+    rows, pca_panels, tsne_panels = [], [], []
+    for method, d, metric in configs:
+        mname = METRIC_NAMES.get(metric, metric)
+        if method == 'original':
+            space = 'Pradinė erdvė'
+            X, D, res = kmedoids_cluster(df, k, random_state, metric=metric)
+        else:
+            space = f"{REDUCTION_NAMES[method]} d={d}"
+            if method == 'pca':
+                X, evr = pca_reduce(df, d, random_state)
+            else:
+                X, _ = tsne_reduce(df, d, perplexity, random_state, cache_dir=cache_dir)
+            D = squareform(pdist(X, metric=metric))
+            res = kmedoids.fasterpam(D, k, random_state=random_state)
+
+        row = evaluate_clustering(X, res.labels, y, f"k-medoids (k={k}, {space}, {mname})", D=D)
+        rows.append({'Erdvė': space, **metric_table_row(mname, row)})
+        common = dict(labels=res.labels, title=f"{space}, {mname} atstumas", centers=res.medoids,
+                      outliers=outliers)
+
+        # pradinė erdvė rodoma abiem metodais, sumažinta – tik tuo, kuriuo sumažinta
+        if method == 'original':
+            Z, xl, yl = pca_embedding(X, random_state)
+            pca_panels.append(dict(Z=Z, xlabel=xl, ylabel=yl, **common))
+            tsne_panels.append(dict(Z=tsne_embedding(D, perplexity, random_state, cache_dir=cache_dir),
+                                    xlabel='t-SNE 1', ylabel='t-SNE 2', **common))
+        elif method == 'pca':
+            pca_panels.append(dict(Z=X[:, :2], xlabel=f"PC1 ({evr[0] * 100:.1f} %)",
+                                   ylabel=f"PC2 ({evr[1] * 100:.1f} %)", **common))
+        else:
+            # t-SNE ašys neturi eiliškumo: d > 2 atveju klasteriai rodomi 2D t-SNE žemėlapyje
+            Z = X if d == 2 else tsne_reduce(df, 2, perplexity, random_state, cache_dir=cache_dir)[0]
+            tsne_panels.append(dict(Z=Z, xlabel='t-SNE 1', ylabel='t-SNE 2', **common))
+
+    plot_panels(pca_panels + tsne_panels,
+                f"k-medoids (k={k}) palyginimas: viršuje – PCA, apačioje – t-SNE "
+                f"(perplexity={perplexity})",
+                f"{out_dir}/kmedoids_k{k}_palyginimas.png", ncols=len(pca_panels))
+
+    tab = pd.DataFrame(rows)
+    os.makedirs(out_dir, exist_ok=True)
+    tab.to_csv(f"{out_dir}/kmedoids_k{k}_palyginimas_matai.csv", index=False)
+    print(tab.round(4).to_string(index=False))
+    return tab
+
 
 # ==============================================================================
 # 6. SKIRTINGŲ klasterizavimo algoritmų rezultatų palyginimas 
@@ -718,6 +973,13 @@ if __name__ == '__main__':
     agnes_stability(df_out, k=2, n_runs=10, method='ward')
 
     # 5 skyrius
+    pca_dims = pca_dimension_analysis(df_out)
     
+    kmedoids_reduced_space(df_out, y, d=12, k=2, method='pca', outliers=outliers)
+    kmedoids_reduced_space(df_out, y, d=2, k=2, method='pca', outliers=outliers)
+    kmedoids_reduced_space(df_out, y, d=12, k=2, method='tsne', perplexity=30, outliers=outliers)
+    kmedoids_reduced_space(df_out, y, d=2, k=2, method='tsne', perplexity=30, outliers=outliers)
+    kmedoids_comparison(df_out, y, k=2, outliers=outliers)
+
     # 6 skyrius
 
