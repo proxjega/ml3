@@ -69,6 +69,13 @@ instead of reusing another section's folder. Note: some section 3 plotting helpe
   - **PCA** (2 components): `pca_embedding` / `plot_clusters_pca`
   - **t-SNE with perplexity = 30**: `tsne_embedding` / `plot_clusters_tsne`
 
+  **Every t-SNE run goes through `cached_tsne`** (never call `TSNE` directly): it uses
+  `init='pca'` (for a precomputed distance matrix, the equivalent classical-MDS init from
+  `pca_init_from_distances`, because sklearn forbids `init='pca'` with `metric='precomputed'`) and
+  caches the result as `tsne_cache/tsne_<hash>.npz` inside the section's export folder. The hash
+  covers the input data and all t-SNE parameters, so a different subsample or parameter is
+  recomputed automatically; delete the `tsne_cache/` folder to force a full recomputation.
+
   Which of them to use depends on the space the clustering was done in:
   - **Original space** (sections 3, 4 and the original-space side of 6): show every result
     with **both** PCA and t-SNE.

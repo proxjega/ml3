@@ -1,3 +1,4 @@
+import hashlib
 import os
 import sys
 import kmedoids
@@ -5,6 +6,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from scipy.cluster.hierarchy import dendrogram, fcluster, linkage
+from scipy.linalg import eigh
 from scipy.spatial.distance import pdist, squareform
 from sklearn.cluster import DBSCAN
 from sklearn.decomposition import PCA
@@ -364,16 +366,70 @@ def pca_embedding(X, random_state=0):
     return Z, f"PC1 ({evr[0]:.1f} %)", f"PC2 ({evr[1]:.1f} %)"
 
 
-def tsne_embedding(D, perplexity=30, random_state=0):
+def pca_init_from_distances(D, n_components=2):
     """
-    t-SNE projekcija iš atstumų matricos D (tas pats atstumas, kuriuo klasterizuota).
+    PCA tipo t-SNE inicializacija iš atstumų matricos (klasikinis MDS).
+    Euklido atstumams tai sutampa su PCA projekcija; sklearn neleidžia init='pca' su
+    metric='precomputed', todėl inicializacija apskaičiuojama čia. Mastelis – kaip sklearn
+    init='pca' (pirmosios ašies st. nuokrypis 1e-4).
+    """
+    n = D.shape[0]
+    J = np.eye(n) - 1.0 / n
+    B = -0.5 * J @ (D ** 2) @ J
+    vals, vecs = eigh(B, subset_by_index=[n - n_components, n - 1])
+    order = np.argsort(vals)[::-1]
+    Y = vecs[:, order] * np.sqrt(np.maximum(vals[order], 0))
+    return (Y / np.std(Y[:, 0]) * 1e-4).astype(np.float32)
+
+
+def cached_tsne(data, cache_dir, n_components=2, perplexity=30, random_state=0, precomputed=False):
+    """
+    t-SNE su init='pca' ir rezultatų talpykla (cache).
+    data – požymių matrica (precomputed=False) arba atstumų matrica (precomputed=True).
+    Raktas – duomenų maišos (hash) reikšmė ir t-SNE parametrai, todėl pasikeitus duomenims
+    (pvz., kitai imčiai) ar parametrams t-SNE perskaičiuojamas. Rezultatas saugomas
+    {cache_dir}/tsne_<raktas>.npz ir kitą kartą tiesiog nuskaitomas.
+    Barnes-Hut t-SNE palaiko tik n_components < 4; didesnei dimensijai naudojamas tikslus
+    (lėtas) metodas.
+    Grąžina (Z, KL divergencija).
+    """
+    data = np.ascontiguousarray(data, dtype=np.float64)
+    h = hashlib.sha1(data.tobytes())
+    h.update(f"{data.shape}|{n_components}|{perplexity}|{random_state}|{precomputed}|pca".encode())
+    path = os.path.join(cache_dir, f"tsne_{h.hexdigest()[:16]}.npz")
+    if os.path.exists(path):
+        f = np.load(path)
+        print(f"t-SNE (d={n_components}, perplexity={perplexity}) nuskaitytas iš {path}: "
+              f"KL divergencija={float(f['kl']):.4f}")
+        return f['Z'], float(f['kl'])
+
+    if precomputed:
+        init = pca_init_from_distances(data, n_components)
+        tsne = TSNE(n_components=n_components, perplexity=perplexity, metric='precomputed',
+                    init=init, random_state=random_state,
+                    method='barnes_hut' if n_components < 4 else 'exact')
+    else:
+        tsne = TSNE(n_components=n_components, perplexity=perplexity, init='pca',
+                    random_state=random_state,
+                    method='barnes_hut' if n_components < 4 else 'exact')
+    Z = tsne.fit_transform(data)
+    kl = float(tsne.kl_divergence_)
+    os.makedirs(cache_dir, exist_ok=True)
+    np.savez(path, Z=Z, kl=kl)
+    print(f"t-SNE (d={n_components}, perplexity={perplexity}): KL divergencija={kl:.4f}, "
+          f"išsaugota {path}")
+    return Z, kl
+
+
+def tsne_embedding(D, perplexity=30, random_state=0,
+                   cache_dir='exports/klasterizavimas_pradineje_erdveje/tsne_cache'):
+    """
+    t-SNE projekcija iš atstumų matricos D (tas pats atstumas, kuriuo klasterizuota),
+    init – PCA tipo (klasikinis MDS iš D), rezultatas talpinamas cache_dir.
     t-SNE išlaiko vietinę kaimynystę, bet atstumai tarp klasterių ir jų dydžiai plokštumoje
     nėra interpretuojami.
     """
-    tsne = TSNE(n_components=2, perplexity=perplexity, metric='precomputed', init='random',
-                random_state=random_state)
-    Z = tsne.fit_transform(D)
-    print(f"t-SNE (perplexity={perplexity}): KL divergencija={tsne.kl_divergence_:.4f}")
+    Z, _ = cached_tsne(D, cache_dir, 2, perplexity, random_state, precomputed=True)
     return Z
 
 
@@ -724,18 +780,16 @@ def pca_reduce(df, d, random_state=0):
     return Xr, pca.explained_variance_ratio_
 
 
-def tsne_reduce(df, d=2, perplexity=30, random_state=0):
+def tsne_reduce(df, d=2, perplexity=30, random_state=0,
+                cache_dir='exports/klasterizavimas_sumazintoje_erdveje/tsne_cache'):
     """
-    Robust Scaling + t-SNE iki d dimensijų (Euklido atstumas Robust Scaling erdvėje).
-    Barnes-Hut t-SNE palaiko tik d < 4; didesnei dimensijai naudojamas tikslus (lėtas) metodas.
+    Robust Scaling + t-SNE (init='pca') iki d dimensijų (Euklido atstumas Robust Scaling erdvėje).
+    Rezultatas talpinamas cache_dir: tiems patiems duomenims ir parametrams t-SNE
+    skaičiuojamas tik vieną kartą.
     Grąžina sumažintos erdvės matricą (n x d) ir KL divergenciją.
     """
     X = robust_scale(df, list(df.columns)).values
-    tsne = TSNE(n_components=d, perplexity=perplexity, init='random', random_state=random_state,
-                method='barnes_hut' if d < 4 else 'exact')
-    Xr = tsne.fit_transform(X)
-    print(f"t-SNE iki d={d} (perplexity={perplexity}): KL divergencija={tsne.kl_divergence_:.4f}")
-    return Xr, float(tsne.kl_divergence_)
+    return cached_tsne(X, cache_dir, d, perplexity, random_state)
 
 
 REDUCTION_NAMES = {'pca': 'PCA', 'tsne': 't-SNE'}
