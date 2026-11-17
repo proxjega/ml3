@@ -342,14 +342,19 @@ def draw_clusters(ax, Z, labels, title, xlabel, ylabel, centers=None, outliers=N
     ax.legend(fontsize=8, markerscale=2)
 
 
-def plot_panels(panels, suptitle, out_path):
+def plot_panels(panels, suptitle, out_path, ncols=None):
     """
-    Išsaugo vieną paveikslą su keliais klasterių grafikais vienoje eilutėje.
+    Išsaugo vieną paveikslą su keliais klasterių grafikais.
     panels – žodynų sąrašas su draw_clusters argumentais (Z, labels, title, xlabel, ylabel, ...).
+    ncols – grafikų skaičius eilutėje (pagal nutylėjimą visi vienoje eilutėje).
     """
-    fig, axes = plt.subplots(1, len(panels), figsize=(6.5 * len(panels), 6), squeeze=False)
-    for ax, p in zip(axes[0], panels):
+    ncols = ncols or len(panels)
+    nrows = -(-len(panels) // ncols)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(6.5 * ncols, 6 * nrows), squeeze=False)
+    for ax, p in zip(axes.flat, panels):
         draw_clusters(ax, **p)
+    for ax in axes.flat[len(panels):]:
+        ax.axis('off')
     fig.suptitle(suptitle)
     fig.tight_layout()
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
@@ -811,6 +816,73 @@ def kmedoids_reduced_space(df, y, d=12, k=2, method='pca', metrics=('euclidean',
     return tab
 
 
+# k-medoids konfigūracijos palyginimui: (erdvė, dimensija, atstumas); kiekvienai erdvei
+# imamas atstumas, kuris buvo geresnis 3 ir 5 skyrių parametrų analizėje
+KMEDOIDS_COMPARISON = (('original', None, 'cityblock'),
+                       ('pca', 12, 'euclidean'),
+                       ('pca', 2, 'cityblock'),
+                       ('tsne', 12, 'euclidean'),
+                       ('tsne', 2, 'euclidean'))
+
+
+def kmedoids_comparison(df, y, k=2, configs=KMEDOIDS_COMPARISON, perplexity=30, random_state=0,
+                        outliers=None, out_dir='exports/klasterizavimas_sumazintoje_erdveje'):
+    """
+    k-medoids rezultatų palyginimas pradinėje ir sumažintose erdvėse (kiekvienai erdvei –
+    pasirinktas atstumas). Vienas paveikslas su 6 grafikais:
+      - viršutinė eilutė – PCA: pradinė erdvė (PCA projekcija), PCA d=12 (PC1/PC2), PCA d=2;
+      - apatinė eilutė – t-SNE: pradinė erdvė (t-SNE iš tos pačios atstumų matricos),
+        t-SNE d=12 (klasteriai 2D t-SNE žemėlapyje), t-SNE d=2.
+    Matai išsaugomi {out_dir}/kmedoids_k{k}_palyginimas_matai.csv (vidiniai matai skaičiuojami
+    erdvėje, kurioje klasterizuota, todėl t-SNE erdvių vidiniai matai dirbtinai didesni).
+    """
+    cache_dir = f"{out_dir}/tsne_cache"
+    rows, pca_panels, tsne_panels = [], [], []
+    for method, d, metric in configs:
+        mname = METRIC_NAMES.get(metric, metric)
+        if method == 'original':
+            space = 'Pradinė erdvė'
+            X, D, res = kmedoids_cluster(df, k, random_state, metric=metric)
+        else:
+            space = f"{REDUCTION_NAMES[method]} d={d}"
+            if method == 'pca':
+                X, evr = pca_reduce(df, d, random_state)
+            else:
+                X, _ = tsne_reduce(df, d, perplexity, random_state, cache_dir=cache_dir)
+            D = squareform(pdist(X, metric=metric))
+            res = kmedoids.fasterpam(D, k, random_state=random_state)
+
+        row = evaluate_clustering(X, res.labels, y, f"k-medoids (k={k}, {space}, {mname})", D=D)
+        rows.append({'Erdvė': space, **metric_table_row(mname, row)})
+        common = dict(labels=res.labels, title=f"{space}, {mname} atstumas", centers=res.medoids,
+                      outliers=outliers)
+
+        # pradinė erdvė rodoma abiem metodais, sumažinta – tik tuo, kuriuo sumažinta
+        if method == 'original':
+            Z, xl, yl = pca_embedding(X, random_state)
+            pca_panels.append(dict(Z=Z, xlabel=xl, ylabel=yl, **common))
+            tsne_panels.append(dict(Z=tsne_embedding(D, perplexity, random_state, cache_dir=cache_dir),
+                                    xlabel='t-SNE 1', ylabel='t-SNE 2', **common))
+        elif method == 'pca':
+            pca_panels.append(dict(Z=X[:, :2], xlabel=f"PC1 ({evr[0] * 100:.1f} %)",
+                                   ylabel=f"PC2 ({evr[1] * 100:.1f} %)", **common))
+        else:
+            # t-SNE ašys neturi eiliškumo: d > 2 atveju klasteriai rodomi 2D t-SNE žemėlapyje
+            Z = X if d == 2 else tsne_reduce(df, 2, perplexity, random_state, cache_dir=cache_dir)[0]
+            tsne_panels.append(dict(Z=Z, xlabel='t-SNE 1', ylabel='t-SNE 2', **common))
+
+    plot_panels(pca_panels + tsne_panels,
+                f"k-medoids (k={k}) palyginimas: viršuje – PCA, apačioje – t-SNE "
+                f"(perplexity={perplexity})",
+                f"{out_dir}/kmedoids_k{k}_palyginimas.png", ncols=len(pca_panels))
+
+    tab = pd.DataFrame(rows)
+    os.makedirs(out_dir, exist_ok=True)
+    tab.to_csv(f"{out_dir}/kmedoids_k{k}_palyginimas_matai.csv", index=False)
+    print(tab.round(4).to_string(index=False))
+    return tab
+
+
 # ==============================================================================
 # 6. SKIRTINGŲ klasterizavimo algoritmų rezultatų palyginimas 
 # ==============================================================================
@@ -839,6 +911,7 @@ if __name__ == '__main__':
     kmedoids_reduced_space(df_out, y, d=2, k=2, method='pca', outliers=outliers)
     kmedoids_reduced_space(df_out, y, d=12, k=2, method='tsne', perplexity=30, outliers=outliers)
     kmedoids_reduced_space(df_out, y, d=2, k=2, method='tsne', perplexity=30, outliers=outliers)
+    kmedoids_comparison(df_out, y, k=2, outliers=outliers)
 
     # 6 skyrius
 
