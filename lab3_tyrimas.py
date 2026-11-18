@@ -583,9 +583,9 @@ def agnes_original_space(df, y, k=2, methods=('single', 'complete', 'average', '
         tsne_panels.append(dict(Z=Z_tsne, xlabel='t-SNE 1', ylabel='t-SNE 2', **common))
 
     plot_panels(pca_panels, f"AGNES klasteriai PCA erdvėje (k={k})",
-                f"{out_dir}/agnes_k{k}_pca.png")
+                f"{out_dir}/agnes_k{k}_pca.png", ncols=2)
     plot_panels(tsne_panels, f"AGNES klasteriai t-SNE erdvėje (k={k}, perplexity={perplexity})",
-                f"{out_dir}/agnes_k{k}_tsne.png")
+                f"{out_dir}/agnes_k{k}_tsne.png", ncols=2)
 
     tab = pd.DataFrame(rows)
     os.makedirs(out_dir, exist_ok=True)
@@ -949,6 +949,113 @@ def kmedoids_comparison(df, y, k=2, configs=KMEDOIDS_COMPARISON, perplexity=30, 
     return tab
 
 
+def agnes_reduced_space(df, y, d=12, k=2, method='pca',
+                        linkage_methods=('single', 'complete', 'average', 'ward'),
+                        perplexity=30, random_state=0, outliers=None,
+                        out_dir='exports/klasterizavimas_sumazintoje_erdveje'):
+    """AGNES klasterizavimas sumažintos dimensijos erdvėje (PCA arba t-SNE iki d dimensijų)."""
+    mname_red = REDUCTION_NAMES[method]
+    if method == 'pca':
+        Xr, evr = pca_reduce(df, d, random_state)
+        var = float(evr.sum())
+        print(f"PCA iki d={d}: paaiškinta dispersija {var * 100:.1f} %")
+        Z = Xr[:, :2]
+        xl, yl = f"PC1 ({evr[0] * 100:.1f} %)", f"PC2 ({evr[1] * 100:.1f} %)"
+        extra = {'paaiškinta dispersija, %': round(var * 100, 2)}
+        subtitle = f"k={k}, PCA d={d}, {var * 100:.1f} % dispersijos"
+    elif method == 'tsne':
+        Xr, kl = tsne_reduce(df, d, perplexity, random_state)
+        Z = Xr if d == 2 else tsne_reduce(df, 2, perplexity, random_state)[0]
+        xl, yl = 't-SNE 1', 't-SNE 2'
+        extra = {'KL divergencija': round(kl, 4)}
+        subtitle = f"k={k}, t-SNE d={d}, perplexity={perplexity}"
+        if d != 2:
+            subtitle += ", rodoma 2D t-SNE žemėlapyje"
+    else:
+        raise ValueError(f"Nežinomas dimensijos mažinimo metodas: {method}")
+
+    d_vec = pdist(Xr, metric='euclidean')
+    D = squareform(d_vec)
+    skip = ('modelis', 'klasteriai', 'triukšmas')
+
+    rows, panels = [], []
+    for lmethod in linkage_methods:
+        Z_link = linkage(d_vec, method=lmethod)
+        labels = fcluster(Z_link, t=k, criterion='maxclust') - 1
+        row = evaluate_clustering(Xr, labels, y,
+                                  f"AGNES (k={k}, {mname_red} d={d}, {lmethod})", D=D)
+        rows.append({'Jungimo būdas': lmethod, **extra,
+                     **{key: v for key, v in row.items() if key not in skip}})
+        panels.append(dict(Z=Z, labels=labels, title=f"{lmethod} jungimas",
+                           xlabel=xl, ylabel=yl, outliers=outliers))
+
+    name = f"agnes_k{k}_{method}_d{d}"
+    plot_panels(panels, f"AGNES klasteriai sumažintoje erdvėje, {mname_red} vizualizacija "
+                        f"({subtitle})", f"{out_dir}/{name}.png", ncols=2)
+
+    tab = pd.DataFrame(rows)
+    os.makedirs(out_dir, exist_ok=True)
+    tab.to_csv(f"{out_dir}/{name}_matai.csv", index=False)
+    print(tab.round(4).to_string(index=False))
+    return tab
+
+
+AGNES_COMPARISON = (('original', None, 'ward'),
+                    ('pca', 12, 'ward'),
+                    ('pca', 2, 'ward'),
+                    ('tsne', 12, 'ward'),
+                    ('tsne', 2, 'ward'))
+
+
+def agnes_comparison(df, y, k=2, configs=AGNES_COMPARISON, perplexity=30, random_state=0,
+                     outliers=None, out_dir='exports/klasterizavimas_sumazintoje_erdveje'):
+    """AGNES rezultatų palyginimas pradinėje ir sumažintose erdvėse."""
+    cache_dir = f"{out_dir}/tsne_cache"
+    skip = ('modelis', 'klasteriai', 'triukšmas')
+    rows, pca_panels, tsne_panels = [], [], []
+    for method, d, lmethod in configs:
+        if method == 'original':
+            space = 'Pradinė erdvė'
+            X, D, labels = agnes_cluster(df, k, method=lmethod)
+        else:
+            space = f"{REDUCTION_NAMES[method]} d={d}"
+            if method == 'pca':
+                X, evr = pca_reduce(df, d, random_state)
+            else:
+                X, _ = tsne_reduce(df, d, perplexity, random_state, cache_dir=cache_dir)
+            d_vec = pdist(X, metric='euclidean')
+            D = squareform(d_vec)
+            labels = fcluster(linkage(d_vec, method=lmethod), t=k, criterion='maxclust') - 1
+
+        row = evaluate_clustering(X, labels, y, f"AGNES (k={k}, {space}, {lmethod})", D=D)
+        rows.append({'Erdvė': space, 'Jungimo būdas': lmethod,
+                     **{key: v for key, v in row.items() if key not in skip}})
+        common = dict(labels=labels, title=f"{space}, {lmethod} jungimas", outliers=outliers)
+
+        if method == 'original':
+            Z, xl, yl = pca_embedding(X, random_state)
+            pca_panels.append(dict(Z=Z, xlabel=xl, ylabel=yl, **common))
+            tsne_panels.append(dict(Z=tsne_embedding(D, perplexity, random_state, cache_dir=cache_dir),
+                                    xlabel='t-SNE 1', ylabel='t-SNE 2', **common))
+        elif method == 'pca':
+            pca_panels.append(dict(Z=X[:, :2], xlabel=f"PC1 ({evr[0] * 100:.1f} %)",
+                                   ylabel=f"PC2 ({evr[1] * 100:.1f} %)", **common))
+        else:
+            Z = X if d == 2 else tsne_reduce(df, 2, perplexity, random_state, cache_dir=cache_dir)[0]
+            tsne_panels.append(dict(Z=Z, xlabel='t-SNE 1', ylabel='t-SNE 2', **common))
+
+    plot_panels(pca_panels + tsne_panels,
+                f"AGNES (k={k}) palyginimas: viršuje – PCA, apačioje – t-SNE "
+                f"(perplexity={perplexity})",
+                f"{out_dir}/agnes_k{k}_palyginimas.png", ncols=len(pca_panels))
+
+    tab = pd.DataFrame(rows)
+    os.makedirs(out_dir, exist_ok=True)
+    tab.to_csv(f"{out_dir}/agnes_k{k}_palyginimas_matai.csv", index=False)
+    print(tab.round(4).to_string(index=False))
+    return tab
+
+
 # ==============================================================================
 # 6. SKIRTINGŲ klasterizavimo algoritmų rezultatų palyginimas 
 # ==============================================================================
@@ -980,6 +1087,12 @@ if __name__ == '__main__':
     kmedoids_reduced_space(df_out, y, d=12, k=2, method='tsne', perplexity=30, outliers=outliers)
     kmedoids_reduced_space(df_out, y, d=2, k=2, method='tsne', perplexity=30, outliers=outliers)
     kmedoids_comparison(df_out, y, k=2, outliers=outliers)
+
+    agnes_reduced_space(df_out, y, d=12, k=2, method='pca', outliers=outliers)
+    agnes_reduced_space(df_out, y, d=2, k=2, method='pca', outliers=outliers)
+    agnes_reduced_space(df_out, y, d=12, k=2, method='tsne', perplexity=30, outliers=outliers)
+    agnes_reduced_space(df_out, y, d=2, k=2, method='tsne', perplexity=30, outliers=outliers)
+    agnes_comparison(df_out, y, k=2, outliers=outliers)
 
     # 6 skyrius
 
